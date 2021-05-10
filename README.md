@@ -336,6 +336,38 @@ Only the first 3 dimensions of the input data are downsampled. If the input data
 If the output group argument is omitted for scale pyramid exporters, the resulting datasets will be stored in the same group with the input dataset. The naming scheme for the lower resolution datasets is `s1`, `s2`, `s3` and so on.<br/>
 If the block size argument is omitted, the resulting dataset will have the same block size as the input dataset. Downsampling factors are written into the attributes metadata of the lower resolution datasets.
 
+### N5 to VVD Converter
+
+  <details>
+  <summary><b>Run on Janelia cluster</b></summary>
+  
+  ```bash
+  spark-janelia/n5-to-vvd.py 
+  <number of cluster nodes> 
+  -ni <path to n5 root> 
+  -i <input dataset> 
+  -o <output path> 
+  -f <downsampling factors> 
+  [-b <block size>]
+  [-c <compression>]
+  ```
+  </details>  
+  <details> 
+  <summary><b>Run on local machine</b></summary>
+  
+  ```bash
+  spark-local/n5-to-vvd.py 
+  -ni <path to n5 root> 
+  -i <input dataset> 
+  -o <output path> 
+  -f <downsampling factors> 
+  [-b <block size>]
+  [-c <compression>]
+  ```
+  </details>
+  
+  example:
+  ```n5-to-vvd.py -ni /n5_input -i c0/s0 -o /vvd_output -f 1,1,1 -f 2,2,2 -b 128,128,128 -c GZIP```
 
 ### Slice TIFF series to N5 converter
 
