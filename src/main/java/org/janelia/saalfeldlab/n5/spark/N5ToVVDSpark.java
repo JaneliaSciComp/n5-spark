@@ -6,6 +6,7 @@ import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.LongStream;
 
+import net.imglib2.view.*;
 import org.apache.spark.SparkConf;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.janelia.saalfeldlab.n5.Compression;
@@ -54,7 +55,6 @@ import net.imglib2.type.numeric.real.FloatType;
 import net.imglib2.util.Intervals;
 import net.imglib2.util.Pair;
 import net.imglib2.util.ValuePair;
-import net.imglib2.view.Views;
 
 import net.imglib2.IterableInterval;
 import net.imglib2.cache.Cache;
@@ -94,7 +94,6 @@ import net.imglib2.util.Intervals;
 import net.imglib2.util.Pair;
 import net.imglib2.util.Util;
 import net.imglib2.util.ValuePair;
-import net.imglib2.view.IntervalView;
 import net.imglib2.view.Views;
 
 import org.apache.spark.SparkConf;
@@ -146,6 +145,8 @@ import net.imglib2.type.numeric.RealType;
 import net.imglib2.view.Views;
 
 import mpicbg.spim.data.sequence.FinalVoxelDimensions;
+
+import net.imglib2.view.ExtendedRandomAccessibleInterval;
 
 import static java.util.Comparator.*;
 
@@ -222,6 +223,30 @@ public class N5ToVVDSpark
         }
     }
 
+    protected static class SinTable {
+        private final int m_precision;
+
+        private final int m_modulus;
+        private final float[] m_sin;
+
+        public SinTable(int precision) {
+            m_precision = precision;
+            m_modulus = 360 * precision;
+            m_sin = new float[m_modulus];
+        }
+
+        public float sinLookup(int a) {
+            return a>=0 ? m_sin[a%(m_modulus)] : -m_sin[-a%(m_modulus)];
+        }
+
+        public float sin(float a) {
+            return sinLookup((int)(a * m_precision + 0.5f));
+        }
+        public float cos(float a) {
+            return sinLookup((int)((a+90f) * m_precision + 0.5f));
+        }
+    }
+
     /**
      * Downsamples the given input dataset of an N5 container with respect to the given downsampling factors.
      * The output dataset will be created within the same N5 container with given block size.
@@ -241,7 +266,7 @@ public class N5ToVVDSpark
             final String inputDatasetPath,
             final N5WriterSupplier n5OutputSupplier,
             final String outputDatasetPath,
-            final int[] downsamplingFactors,
+            final double[] downsamplingFactors,
             final Optional< int[] > blockSizeOptional,
             final Optional< Compression > compressionOptional,
             final Optional< DataType > dataTypeOptional,
@@ -254,6 +279,7 @@ public class N5ToVVDSpark
         final int[] inputBlockSize = inputAttributes.getBlockSize();
         final Compression inputCompression = inputAttributes.getCompression();
         final DataType inputDataType = inputAttributes.getDataType();
+        final long[] inputDimensions = inputAttributes.getDimensions();
 
         final int[] outputBlockSize = blockSizeOptional.isPresent() ? blockSizeOptional.get() : inputBlockSize;
         final Compression outputCompression = compressionOptional.isPresent() ? compressionOptional.get() : inputCompression;
@@ -320,7 +346,7 @@ public class N5ToVVDSpark
 
         final long[] outputDimensions = new long[ dim ];
         for ( int d = 0; d < dim; ++d )
-            outputDimensions[ d ] = inputAttributes.getDimensions()[ d ] / downsamplingFactors[ d ];
+            outputDimensions[ d ] = (long)(inputAttributes.getDimensions()[ d ] / downsamplingFactors[ d ] + 0.5);
 
         if ( Arrays.stream( outputDimensions ).min().getAsLong() < 1 )
             throw new IllegalArgumentException( "Degenerate output dimensions: " + Arrays.toString( outputDimensions ) );
@@ -335,7 +361,7 @@ public class N5ToVVDSpark
 
         // set the downsampling factors attribute
         final int[] inputAbsoluteDownsamplingFactors = n5Input.getAttribute( inputDatasetPath, DOWNSAMPLING_FACTORS_ATTRIBUTE_KEY, int[].class );
-        final int[] outputAbsoluteDownsamplingFactors = new int[ downsamplingFactors.length ];
+        final double[] outputAbsoluteDownsamplingFactors = new double[ downsamplingFactors.length ];
         for ( int d = 0; d < downsamplingFactors.length; ++d )
             outputAbsoluteDownsamplingFactors[ d ] = downsamplingFactors[ d ] * ( inputAbsoluteDownsamplingFactors != null ? inputAbsoluteDownsamplingFactors[ d ] : 1 );
         n5Output.setAttribute( outputDatasetPath, DOWNSAMPLING_FACTORS_ATTRIBUTE_KEY, outputAbsoluteDownsamplingFactors );
@@ -369,8 +395,10 @@ public class N5ToVVDSpark
             for ( int d = 0; d < dim; ++d )
             {
                 targetMax[ d ] = targetMin[ d ] + cellDimensions[ d ] - 1;
-                sourceMin[ d ] = targetMin[ d ] * downsamplingFactors[ d ];
-                sourceMax[ d ] = targetMax[ d ] * downsamplingFactors[ d ] + downsamplingFactors[ d ] - 1;
+                sourceMin[ d ] = (long)(targetMin[ d ] * downsamplingFactors[ d ] + 0.5) - 1;
+                if (sourceMin[d] < 0)
+                    sourceMin[d] = 0;
+                sourceMax[ d ] = (long)(targetMax[ d ] * downsamplingFactors[ d ] + 0.5) + 1;
             }
             final Interval sourceInterval = new FinalInterval( sourceMin, sourceMax );
             final Interval targetInterval = new FinalInterval( targetMin, targetMax );
@@ -390,8 +418,9 @@ public class N5ToVVDSpark
                 return new ArrayList<VVDBlockMetadata>();
 
             /* do if not empty */
+            final RandomAccessibleInterval< I > sourceBlock2 = Views.interval( source, sourceInterval );
             final RandomAccessibleInterval< I > targetBlock = new ArrayImgFactory<>( defaultValue ).create( targetInterval );
-            Downsample.downsample( sourceBlock, targetBlock, downsamplingFactors );
+            downsampleFunction( sourceBlock2, inputDimensions, targetBlock, targetInterval, downsamplingFactors );
 
             final O outputType = N5Utils.type( outputDataType );
             final RandomAccessible< O > convertedSource;
@@ -444,49 +473,139 @@ public class N5ToVVDSpark
 
         return final_res;
     }
+/*
+    static final double a = 0.5; // Catmull-Rom interpolation
+    public static final double cubic(double x) {
+        if (x < 0.0) x = -x;
+        double z = 0.0;
+        if (x < 1.0)
+            z = x*x*(x*(-a+2.0) + (a-3.0)) + 1.0;
+        else if (x < 2.0)
+            z = -a*x*x*x + 5.0*a*x*x - 8.0*a*x + 4.0*a;
+        return z;
+    }
+*/
+    public static final double cubic(double x) {
+        if (x < 0.0) x = -x;
+        double z = 0.0;
+        if (x < 1.0)
+            z = x*x*(x*1.5 - 2.5) + 1.0;
+        else if (x < 2.0)
+            z = -0.5*x*x*x + 2.5*x*x - 4.0*x + 2.0;
+        return z;
+    }
 
-    public static < T extends RealType< T > > void downsampleFunction( final RandomAccessible< T > input, final RandomAccessibleInterval< T > output, final int[] factor )
+    public static < T extends RealType< T > > void downsampleFunction( final RandomAccessible< T > input, final long[] inputDimensinos, final RandomAccessibleInterval< T > output, final Interval outInterval, final double[] factor )
     {
         assert input.numDimensions() == output.numDimensions();
         assert input.numDimensions() == factor.length;
 
         final int n = input.numDimensions();
         final RectangleNeighborhoodFactory< T > f = RectangleNeighborhoodUnsafe.< T >factory();
-        final long[] dim = new long[ n ];
-        for ( int d = 0; d < n; ++d )
-            dim[ d ] = factor[ d ];
-        final Interval spanInterval = new FinalInterval( dim );
+        final long[] nmin = new long[ n ];
+        final long[] nmax = new long[ n ];
+        for ( int d = 0; d < n && d < 2; ++d ) {
+            nmin[d] = -1;
+            nmax[d] = 2;
+        }
+        for ( int d = 2; d < n && d < 3; ++d ) {
+            nmin[d] = 0;
+            nmax[d] = (int)factor[d];
+        }
+        final Interval spanInterval = new FinalInterval( nmin, nmax );
 
         final long[] minRequiredInput = new long[ n ];
         final long[] maxRequiredInput = new long[ n ];
         output.min( minRequiredInput );
         output.max( maxRequiredInput );
-        for ( int d = 0; d < n; ++d )
-        {
-            minRequiredInput[ d ] *= factor[ d ];
-            maxRequiredInput[ d ] *= factor[ d ];
-            maxRequiredInput[ d ] += factor[ d ] - 1;
+/*
+        for ( int d = 0; d < n; ++d ) {
+            minRequiredInput[ d ] = (long)((outInterval.min(d) + minRequiredInput[d]) * factor[ d ] + 0.5) - 1;
+            if (minRequiredInput[d] > 0)
+                minRequiredInput[d] = 0;
+            maxRequiredInput[ d ] = (long)((outInterval.min(d) + maxRequiredInput[d]) * factor[ d ] + 0.5) + 1;
         }
-        final RandomAccessibleInterval< T > requiredInput = Views.interval( input, new FinalInterval( minRequiredInput, maxRequiredInput ) );
+*/
+
+        for ( int d = 0; d < n; ++d ) {
+            minRequiredInput[ d ] = (long)(outInterval.min(d) * factor[ d ]) + nmin[d];
+            if (minRequiredInput[ d ] < 0)
+                minRequiredInput[ d ] = 0;
+            maxRequiredInput[ d ] = (long)(Math.ceil(outInterval.max(d) * factor[ d ])) + nmax[d];
+            if (maxRequiredInput[ d ] > inputDimensinos[ d ] - 1 - 1)
+                maxRequiredInput[ d ] = inputDimensinos[ d ] - 1 - 1;
+        }
+        System.out.println( "min: " + minRequiredInput[0] + " " + minRequiredInput[1] );
+        System.out.println( "max: " + maxRequiredInput[0] + " " + maxRequiredInput[1] );
+
+        final ExtendedRandomAccessibleInterval< T, RandomAccessibleInterval<T> > requiredInput = Views.extendBorder(Views.interval( input, new FinalInterval( minRequiredInput, maxRequiredInput ) ));
 
         final RectangleShape.NeighborhoodsAccessible< T > neighborhoods = new RectangleShape.NeighborhoodsAccessible<>( requiredInput, spanInterval, f );
         final RandomAccess< Neighborhood< T > > block = neighborhoods.randomAccess();
 
-        long size = 1;
-        for ( int d = 0; d < n; ++d )
-            size *= factor[ d ];
-        final double scale = 1.0 / size;
-
+        int size = 16;
+        final long znum = nmax[2];
+        final double[] loc_pos = new double[2];
+        final double[] g_pos = new double[2];
+        final double[] elems = new double[size];
         final Cursor< T > out = Views.iterable( output ).localizingCursor();
+        final RandomAccess< T > indata = requiredInput.randomAccess();
+        long out_count = 0;
         while( out.hasNext() )
         {
             final T o = out.next();
-            for ( int d = 0; d < n; ++d )
-                block.setPosition( out.getLongPosition( d ) * factor[ d ], d );
-            double sum = 0;
-            for ( final T i : block.get() )
-                sum += i.getRealDouble();
-            o.setReal( sum * scale );
+
+            for ( int d = 0; d < n && d < 2; ++d ) {
+                double p0 = (outInterval.min(d) + out.getLongPosition(d)) * factor[d];
+                block.setPosition((long)p0, d);
+                loc_pos[d] = p0 - (long)p0;
+                g_pos[d] = p0;
+            }
+            for ( int d = 2; d < n; ++d ) {
+                double p0 = (outInterval.min(d) + out.getLongPosition(d)) * factor[d];
+                block.setPosition((long)(p0 + 0.5), d);
+            }
+
+            if (out_count == 0)
+                System.out.println( "Pos: " + g_pos[0] + " " + g_pos[1] );
+
+            double mipval = 0;
+            for (long zz = 0; zz < znum; zz++) {
+                int count = 0;
+                for (final T i : block.get()) {
+                    elems[count] = i.getRealDouble();
+                    count++;
+                    if (count >= 16)
+                        break;
+                }
+
+                double q = 0;
+                for (int v = 0; v <= 3; v++) {
+                    double p = 0;
+                    for (int u = 0; u <= 3; u++) {
+                        p = p + elems[4 * v + u] * cubic(loc_pos[0] - (u - 1));
+                    }
+                    q = q + p * cubic(loc_pos[1] - (v - 1));
+                }
+                if (mipval < q)
+                    mipval = q;
+            }
+
+/*
+            for ( int d = 0; d < n; ++d ) {
+                double p0 = (outInterval.min(d) + out.getLongPosition(d)) * factor[d];
+                indata.setPosition((long)(p0 + 0.5), d);
+            }
+
+            double mipval = 0;
+            for (long zz = 0; zz < znum; zz++) {
+                double q = indata.get().getRealDouble();
+                if (mipval < q)
+                    mipval = q;
+            }
+*/
+            o.setReal( mipval );
+            out_count++;
         }
     }
 
@@ -497,7 +616,7 @@ public class N5ToVVDSpark
         ArrayList<List<VVDBlockMetadata>> vvdxml = new ArrayList<List<VVDBlockMetadata>>();
 
         final String outputDatasetPath = parsedArgs.getOutputDatasetPath();
-        final int[][] downsamplingFactors = parsedArgs.getDownsamplingFactors();
+        final double[][] downsamplingFactors = parsedArgs.getDownsamplingFactors();
 
         int bit_depth = 8;
         final int[] outputBlockSize;
@@ -505,7 +624,7 @@ public class N5ToVVDSpark
         List<String> res_strs = new ArrayList<String>();
 
         try ( final JavaSparkContext sparkContext = new JavaSparkContext( new SparkConf()
-                .setAppName( "N5DownsamplerSpark" )
+                .setAppName( "N5toVVDSpark" )
                 .set( "spark.serializer", "org.apache.spark.serializer.KryoSerializer" )
         ) )
         {
@@ -515,10 +634,10 @@ public class N5ToVVDSpark
             //if ( outputDatasetPath.length != downsamplingFactors.length )
             //    throw new IllegalArgumentException( "Number of output datasets does not match downsampling factors!" );
 
-            for (int[] dfs : downsamplingFactors)
+            for (double[] dfs : downsamplingFactors)
             {
                 String str = "";
-                for (int df : dfs)
+                for (double df : dfs)
                 {
                     str += df;
                 }
@@ -534,6 +653,7 @@ public class N5ToVVDSpark
             outputBlockSize = parsedArgs.getBlockSize() != null ? parsedArgs.getBlockSize() : inputBlockSize;
             outputCompression = parsedArgs.getCompression() != null ? parsedArgs.getCompression() : inputCompression;
             final DataType outputDataType = parsedArgs.getDataType() != null ? parsedArgs.getDataType() : inputDataType;
+            final long[] inputDimensions = inputAttributes.getDimensions();
 
             switch (outputDataType) {
                 case UINT8:
@@ -576,26 +696,15 @@ public class N5ToVVDSpark
                     }
                 }
             }
-            res_strs.add(String.format("xspc=\"%f\" yspc=\"%f\" zspc=\"%f\"", pixelResolution[0], pixelResolution[1], pixelResolution[2]));
 
-            vvdxml.add(downsample(
-                    sparkContext,
-                    n5InputSupplier,
-                    parsedArgs.getInputDatasetPath(),
-                    n5OutputSupplier,
-                    outputDatasetPath + File.separator + String.format("vvd_Lv%d_Ch0_Fr0_data0", 0),
-                    downsamplingFactors[ 0 ],
-                    Optional.ofNullable(parsedArgs.getBlockSize()),
-                    Optional.ofNullable(parsedArgs.getCompression()),
-                    Optional.ofNullable(parsedArgs.getDataType()),
-                    Optional.ofNullable(parsedArgs.getValueRange()),
-                    true
-            ));
-
-            for ( int i = 1; i < downsamplingFactors.length; i++ )
+            for ( int i = 0; i < downsamplingFactors.length; i++ )
             {
+                final double[] adjustedDownsamplingFactor = new double[ inputDimensions.length ];
+                for ( int d = 0; d < inputDimensions.length; ++d )
+                    adjustedDownsamplingFactor[d] = (double)inputDimensions[d] / (long)(inputDimensions[d] / downsamplingFactors[i][d] + 0.5);
+
                 res_strs.add(String.format("xspc=\"%f\" yspc=\"%f\" zspc=\"%f\"",
-                        pixelResolution[0]*downsamplingFactors[i][0], pixelResolution[1]*downsamplingFactors[i][1], pixelResolution[2]*downsamplingFactors[i][2]));
+                        pixelResolution[0]*adjustedDownsamplingFactor[0], pixelResolution[1]*adjustedDownsamplingFactor[1], pixelResolution[2]*adjustedDownsamplingFactor[2]));
 
                 vvdxml.add(downsample(
                         sparkContext,
@@ -603,7 +712,7 @@ public class N5ToVVDSpark
                         parsedArgs.getInputDatasetPath(),
                         n5OutputSupplier,
                         outputDatasetPath + File.separator + String.format("vvd_Lv%d_Ch0_Fr0_data0", i),
-                        downsamplingFactors[ i ],
+                        adjustedDownsamplingFactor,
                         Optional.ofNullable(parsedArgs.getBlockSize()),
                         Optional.ofNullable(parsedArgs.getCompression()),
                         Optional.ofNullable(parsedArgs.getDataType()),
@@ -743,7 +852,7 @@ public class N5ToVVDSpark
         public Compression getCompression() { return n5Compression != null ? n5Compression.get() : null; }
         public DataType getDataType() { return dataType; }
         public Pair< Double, Double > getValueRange() { return Objects.nonNull( minValue ) && Objects.nonNull( maxValue ) ? new ValuePair<>( minValue, maxValue ) : null; }
-        public int[][] getDownsamplingFactors() { return CmdUtils.parseMultipleIntArrays( downsamplingFactors ); }
+        public double[][] getDownsamplingFactors() { return CmdUtils.parseMultipleDoubleArrays( downsamplingFactors ); }
     }
 
     static class VVDBlockMetadata implements Serializable
