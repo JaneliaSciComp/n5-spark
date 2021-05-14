@@ -545,8 +545,8 @@ public class N5ToVVDSpark
 
         int size = 16;
         final long znum = nmax[2];
-        final double[] loc_pos = new double[2];
         final double[] g_pos = new double[2];
+        final double[] base_pos = new double[2];
         final double[] elems = new double[size];
         final Cursor< T > out = Views.iterable( output ).localizingCursor();
         final RandomAccess< T > indata = requiredInput.randomAccess();
@@ -556,14 +556,14 @@ public class N5ToVVDSpark
             final T o = out.next();
 
             for ( int d = 0; d < n && d < 2; ++d ) {
-                double p0 = (outInterval.min(d) + out.getLongPosition(d)) * factor[d];
-                block.setPosition((long)p0, d);
-                loc_pos[d] = p0 - (long)p0;
+                double p0 = (outInterval.min(d) + out.getLongPosition(d) + 0.5) * factor[d];
+                block.setPosition((long)(p0 - 0.5), d);
                 g_pos[d] = p0;
+                base_pos[d] = (long)(p0 - 0.5) - 1;
             }
             for ( int d = 2; d < n; ++d ) {
-                double p0 = (outInterval.min(d) + out.getLongPosition(d)) * factor[d];
-                block.setPosition((long)(p0 + 0.5), d);
+                double p0 = (outInterval.min(d) + out.getLongPosition(d) + 0.5) * factor[d];
+                block.setPosition((long)p0, d);
             }
 
             if (out_count == 0)
@@ -583,9 +583,9 @@ public class N5ToVVDSpark
                 for (int v = 0; v <= 3; v++) {
                     double p = 0;
                     for (int u = 0; u <= 3; u++) {
-                        p = p + elems[4 * v + u] * cubic(loc_pos[0] - (u - 1));
+                        p = p + elems[4 * v + u] * cubic(g_pos[0] - (base_pos[0] + u + 0.5 - 1));
                     }
-                    q = q + p * cubic(loc_pos[1] - (v - 1));
+                    q = q + p * cubic(g_pos[1] - (base_pos[1] + v + 0.5 - 1));
                 }
                 if (mipval < q)
                     mipval = q;
