@@ -157,6 +157,7 @@ public class N5ToVVDSpark
     public static final String DOWNSAMPLING_FACTORS_ATTRIBUTE_KEY = "downsamplingFactors";
     public static final String PIXEL_RESOLUTION_ATTRIBUTE_KEY = "pixelResolution";
 
+    public static final String TEMP_N5_DIR = "temp_n5_dir";
 
     protected static class LockedFileChannel implements Closeable {
 
@@ -352,7 +353,7 @@ public class N5ToVVDSpark
             throw new IllegalArgumentException( "Degenerate output dimensions: " + Arrays.toString( outputDimensions ) );
 
         n5Output.createDataset(
-                outputDatasetPath,
+                TEMP_N5_DIR,
                 outputDimensions,
                 outputBlockSize,
                 outputDataType,
@@ -364,18 +365,18 @@ public class N5ToVVDSpark
         final double[] outputAbsoluteDownsamplingFactors = new double[ downsamplingFactors.length ];
         for ( int d = 0; d < downsamplingFactors.length; ++d )
             outputAbsoluteDownsamplingFactors[ d ] = downsamplingFactors[ d ] * ( inputAbsoluteDownsamplingFactors != null ? inputAbsoluteDownsamplingFactors[ d ] : 1 );
-        n5Output.setAttribute( outputDatasetPath, DOWNSAMPLING_FACTORS_ATTRIBUTE_KEY, outputAbsoluteDownsamplingFactors );
+        n5Output.setAttribute( TEMP_N5_DIR, DOWNSAMPLING_FACTORS_ATTRIBUTE_KEY, outputAbsoluteDownsamplingFactors );
 
         final CellGrid outputCellGrid = new CellGrid( outputDimensions, outputBlockSize );
         final long numDownsampledBlocks = Intervals.numElements( outputCellGrid.getGridDimensions() );
         final List< Long > blockIndexes = LongStream.range( 0, numDownsampledBlocks ).boxed().collect( Collectors.toList() );
 
         try {
-            Files.delete(Paths.get(outputDatasetPath));
+            Files.delete(Paths.get(TEMP_N5_DIR));
         } catch (NoSuchFileException x) {
             //Do nothing
         } catch (DirectoryNotEmptyException x) {
-            System.err.format("%s not empty%n", outputDatasetPath);
+            System.err.format("%s not empty%n", TEMP_N5_DIR);
         } catch (IOException x) {
             // File permission problems are caught here.
             System.err.println(x);
@@ -437,15 +438,9 @@ public class N5ToVVDSpark
             }
             final RandomAccessibleInterval< O > convertedSourceInterval = Views.interval( convertedSource, targetBlock);
 
-            if ( overwriteExisting)
-            {
-                // Empty blocks will not be written out. Delete blocks to avoid remnant blocks if overwriting.
-                N5Utils.deleteBlock( convertedSourceInterval, n5OutputSupplier.get(), outputDatasetPath, blockGridPosition );
-            }
-
             final long[] grid_dim = new long[ dim ];
             cellGrid.gridDimensions(grid_dim);
-            return saveNonEmptyBlock( convertedSourceInterval, outputDatasetPath, n5OutputSupplier.get().getDatasetAttributes(outputDatasetPath) , blockGridPosition, grid_dim, outputType.createVariable() );
+            return saveNonEmptyBlock( convertedSourceInterval, outputDatasetPath, n5OutputSupplier.get().getDatasetAttributes(TEMP_N5_DIR) , blockGridPosition, grid_dim, outputType.createVariable() );
 
         } ).collect();
 
@@ -454,6 +449,47 @@ public class N5ToVVDSpark
             for(VVDBlockMetadata d : ls) {
                 final_res.add(d);
             }
+        }
+
+        final Path packedFilePath = Paths.get(outputDatasetPath);
+        try {
+            BufferedInputStream in;
+            final LockedFileChannel lockedChannel = LockedFileChannel.openForWriting(packedFilePath);
+            BufferedOutputStream out = new BufferedOutputStream(Channels.newOutputStream(lockedChannel.getFileChannel()));
+            String dir_path = Paths.get(outputDatasetPath).getParent().toString();
+            long offset = 0;
+            byte[] buffer = new byte[8192];
+            for (int i = 0; i < final_res.size(); i++) {
+                final Path chunkFilePath = Paths.get(dir_path, final_res.get(i).getFilePath());
+                File sourceFile = chunkFilePath.toFile();
+                in = new BufferedInputStream(new FileInputStream(sourceFile));
+                int read_size = -1;
+                long datasize = 0;
+                while ((read_size = in.read(buffer)) != -1) {
+                    out.write(buffer, 0, read_size);
+                    datasize += read_size;
+                }
+                in.close();
+                sourceFile.delete();
+
+                final_res.get(i).setFileOffset(offset);
+                final_res.get(i).setFilePath(packedFilePath.getFileName().toString());
+                final_res.get(i).setDataSize(datasize);
+
+                offset += datasize;
+            }
+            out.flush();
+            lockedChannel.close();
+
+            Path temp_dir_path = Paths.get(outputDatasetPath).getParent().resolve(TEMP_N5_DIR);
+            Files.walk(temp_dir_path)
+                    .sorted(Comparator.reverseOrder())
+                    .map(Path::toFile)
+                    .forEach(File::delete);
+            Files.deleteIfExists(Paths.get(dir_path, "attributes.json"));
+
+        } catch (IOException x) {
+            System.err.println(x);
         }
 
         final_res.sort( comparing(VVDBlockMetadata::getFileOffset) );
@@ -466,10 +502,13 @@ public class N5ToVVDSpark
             final_res.get(final_res.size()-1).setDataSize(fsize - final_res.get(final_res.size()-1).getFileOffset());
         }
         */
+
+        /*
         for(VVDBlockMetadata d : final_res) {
             System.out.println( d.getVVDXMLBrickTag() );
             System.out.println( d.getVVDXMLFileTag() );
         }
+        */
 
         return final_res;
     }
@@ -535,8 +574,8 @@ public class N5ToVVDSpark
             if (maxRequiredInput[ d ] > inputDimensinos[ d ] - 1 - 1)
                 maxRequiredInput[ d ] = inputDimensinos[ d ] - 1 - 1;
         }
-        System.out.println( "min: " + minRequiredInput[0] + " " + minRequiredInput[1] );
-        System.out.println( "max: " + maxRequiredInput[0] + " " + maxRequiredInput[1] );
+        //System.out.println( "min: " + minRequiredInput[0] + " " + minRequiredInput[1] );
+        //System.out.println( "max: " + maxRequiredInput[0] + " " + maxRequiredInput[1] );
 
         final ExtendedRandomAccessibleInterval< T, RandomAccessibleInterval<T> > requiredInput = Views.extendBorder(Views.interval( input, new FinalInterval( minRequiredInput, maxRequiredInput ) ));
 
@@ -566,8 +605,8 @@ public class N5ToVVDSpark
                 block.setPosition((long)p0, d);
             }
 
-            if (out_count == 0)
-                System.out.println( "Pos: " + g_pos[0] + " " + g_pos[1] );
+            //if (out_count == 0)
+            //    System.out.println( "Pos: " + g_pos[0] + " " + g_pos[1] );
 
             double mipval = 0;
             for (long zz = 0; zz < znum; zz++) {
@@ -639,9 +678,9 @@ public class N5ToVVDSpark
                 String str = "";
                 for (double df : dfs)
                 {
-                    str += df;
+                    str += " " + df + ",";
                 }
-                System.out.println( "downsamplingFactors: " + str );
+                System.out.println( "downsamplingFactors:" + str );
             }
 
             final N5Reader n5Input = n5InputSupplier.get();
@@ -685,7 +724,6 @@ public class N5ToVVDSpark
             final Map<String, Class<?>> metaMap = n5Input.listAttributes(parsedArgs.getInputDatasetPath());
             double[] pixelResolution = new double[]{1.0, 1.0, 1.0};
             if (metaMap.containsKey(PIXEL_RESOLUTION_ATTRIBUTE_KEY)) {
-                System.out.println(metaMap.get(PIXEL_RESOLUTION_ATTRIBUTE_KEY));
                 if (metaMap.get(PIXEL_RESOLUTION_ATTRIBUTE_KEY) == double[].class)
                     pixelResolution = n5Input.getAttribute(parsedArgs.getInputDatasetPath(), PIXEL_RESOLUTION_ATTRIBUTE_KEY, double[].class);
                 else if (metaMap.get(PIXEL_RESOLUTION_ATTRIBUTE_KEY) == Object.class) {
@@ -894,6 +932,7 @@ public class N5ToVVDSpark
         public long getDataSize() { return m_dataSize; }
         public void setDataSize(long dataSize) { m_dataSize = dataSize; }
         public String getFilePath() { return m_filePath; }
+        public void setFilePath(String path) { m_filePath = path; }
         public String getCompression() { return m_compression; }
         public long getFileOffset() { return m_fileOffset; }
         public void setFileOffset(long fileOffset) { m_fileOffset = fileOffset; }
@@ -1110,7 +1149,7 @@ public class N5ToVVDSpark
                     final long data_size = 0L;//lockedChannel.getFileChannel().position() - file_offset;
                     final long[] bound_min = {gridPosition[0] * blockSize[0], gridPosition[1] * blockSize[1], gridPosition[2] * blockSize[2]};
                     ret.add(new VVDBlockMetadata(brickID, data_size, path.getFileName().toString(), compression, file_offset, longCroppedBlockSize, bound_min, dimension));
-                    System.out.println( "saveNonEmptyBlock: finished " + brickID );
+                    //System.out.println( "saveNonEmptyBlock: finished " + brickID );
                 }
             }
 
