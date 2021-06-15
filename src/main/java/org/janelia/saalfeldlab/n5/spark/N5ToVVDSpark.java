@@ -400,12 +400,18 @@ public class N5ToVVDSpark
                 if (sourceMin[d] < 0)
                     sourceMin[d] = 0;
                 sourceMax[ d ] = (long)(targetMax[ d ] * downsamplingFactors[ d ] + 0.5) + 1;
+                if (sourceMax[ d ] > inputDimensions[ d ] - 1)
+                    sourceMax[ d ] = inputDimensions[ d ] - 1;
             }
             final Interval sourceInterval = new FinalInterval( sourceMin, sourceMax );
             final Interval targetInterval = new FinalInterval( targetMin, targetMax );
 
-            final RandomAccessibleInterval< I > source = N5Utils.open( n5InputSupplier.get(), inputDatasetPath );
+            final N5Reader n5Local = n5InputSupplier.get();
+
+            final RandomAccessibleInterval< I > source = N5Utils.open( n5Local, inputDatasetPath );
             final RandomAccessibleInterval< I > sourceBlock = Views.offsetInterval( source, sourceInterval );
+
+            //System.out.println(Arrays.toString(sourceMin)+Arrays.toString(sourceMax) + " " + Views.iterable( sourceBlock ).size());
 
             /* test if empty */
             final I defaultValue = Util.getTypeFromInterval( sourceBlock ).createVariable();
@@ -655,7 +661,8 @@ public class N5ToVVDSpark
         ArrayList<List<VVDBlockMetadata>> vvdxml = new ArrayList<List<VVDBlockMetadata>>();
 
         final String outputDatasetPath = parsedArgs.getOutputDatasetPath();
-        final double[][] downsamplingFactors = parsedArgs.getDownsamplingFactors();
+        double[][] downsamplingFactors = parsedArgs.getDownsamplingFactors();
+        final Integer numLevels = parsedArgs.getNumLevels();
 
         int bit_depth = 8;
         final int[] outputBlockSize;
@@ -673,14 +680,63 @@ public class N5ToVVDSpark
             //if ( outputDatasetPath.length != downsamplingFactors.length )
             //    throw new IllegalArgumentException( "Number of output datasets does not match downsampling factors!" );
 
-            for (double[] dfs : downsamplingFactors)
-            {
-                String str = "";
-                for (double df : dfs)
-                {
-                    str += " " + df + ",";
+            if (downsamplingFactors != null) {
+                for (double[] dfs : downsamplingFactors) {
+                    String str = "";
+                    for (double df : dfs) {
+                        str += " " + df + ",";
+                    }
+                    System.out.println("downsamplingFactors:" + str);
                 }
-                System.out.println( "downsamplingFactors:" + str );
+            }
+
+            if (downsamplingFactors == null && numLevels != null && numLevels > 0)
+            {
+                if (downsamplingFactors == null)
+                {
+                    downsamplingFactors = new double[numLevels][1];
+                    downsamplingFactors[0][0] = 1.0;
+                    for (int i = 1; i <= numLevels; i++)
+                        downsamplingFactors[i][0] = 1.0 / (1.0 - 0.9 / numLevels * i);
+                }
+                else
+                {
+                    /*
+                    double[][] newDownsamplingFactors = new double[numLevels][];
+                    double[] last = null;
+                    for (int i = 0; i <= numLevels; i++) {
+                        if (i < downsamplingFactors.length) {
+                            newDownsamplingFactors[i] = downsamplingFactors[i];
+                            last = newDownsamplingFactors[i];
+                        } else if (last != null) {
+                            newDownsamplingFactors[i] = new double[inputDimensions.length];
+                            double tmp = -1.0;
+                            for  (int d = 0; d < inputDimensions.length; d++) {
+                                if (d < last.length) {
+                                    final double sc = last[d] > 10 ?
+                                            last[d] :
+                                            (1.0 / last[d]) - (1.0 / last[d] - 0.1) / (numLevels - downsamplingFactors.length) * (i - downsamplingFactors.length);
+                                    newDownsamplingFactors[i][d] = 1.0 / sc;
+                                    tmp = newDownsamplingFactors[i][d];
+                                } else {
+                                    newDownsamplingFactors[i][d] = tmp;
+                                }
+                            }
+                        } else
+                            break;
+                    }
+                    downsamplingFactors = newDownsamplingFactors;
+                    */
+                }
+            }
+            else
+            {
+                if (downsamplingFactors == null)
+                {
+                    downsamplingFactors = new double[6][1];
+                    for (int i = 0; i <= 5; i++)
+                        downsamplingFactors[i][0] = 1.0 / (1.0 - 0.9 / 5 * i);
+                }
             }
 
             final N5Reader n5Input = n5InputSupplier.get();
@@ -738,8 +794,17 @@ public class N5ToVVDSpark
             for ( int i = 0; i < downsamplingFactors.length; i++ )
             {
                 final double[] adjustedDownsamplingFactor = new double[ inputDimensions.length ];
-                for ( int d = 0; d < inputDimensions.length; ++d )
-                    adjustedDownsamplingFactor[d] = (double)inputDimensions[d] / (long)(inputDimensions[d] / downsamplingFactors[i][d] + 0.5);
+                double last = 1.0;
+                for ( int d = 0; d < inputDimensions.length; ++d ) {
+                    double dval = 1.0;
+                    if (d < downsamplingFactors[i].length && downsamplingFactors[i][d] > 0.0) {
+                        dval = downsamplingFactors[i][d];
+                        last = dval;
+                    }
+                    else
+                        dval = last;
+                    adjustedDownsamplingFactor[d] = (double) inputDimensions[d] / (long) (inputDimensions[d] / dval + 0.5);
+                }
 
                 res_strs.add(String.format("xspc=\"%f\" yspc=\"%f\" zspc=\"%f\"",
                         pixelResolution[0]*adjustedDownsamplingFactor[0], pixelResolution[1]*adjustedDownsamplingFactor[1], pixelResolution[2]*adjustedDownsamplingFactor[2]));
@@ -827,9 +892,13 @@ public class N5ToVVDSpark
                 usage = "Path(s) to the output dataset to be created (e.g. data/group/s1).")
         private String outputDatasetPath;
 
-        @Option(name = "-f", aliases = { "--factors" }, required = true, handler = StringArrayOptionHandler.class,
+        @Option(name = "-f", aliases = { "--factors" }, required = false, handler = StringArrayOptionHandler.class,
                 usage = "Downsampling factors. If using multiple, each factor builds on the last.")
         private String[] downsamplingFactors;
+
+        @Option(name = "-l", aliases = { "--levels" }, required = false,
+                usage = "Number of levels in a resolution pyramid.")
+        private Integer numLevels;
 
         @Option(name = "-b", aliases = { "--blockSize" }, required = false,
                 usage = "Block size for the output dataset (by default the same block size is used as for the input dataset).")
@@ -891,6 +960,7 @@ public class N5ToVVDSpark
         public DataType getDataType() { return dataType; }
         public Pair< Double, Double > getValueRange() { return Objects.nonNull( minValue ) && Objects.nonNull( maxValue ) ? new ValuePair<>( minValue, maxValue ) : null; }
         public double[][] getDownsamplingFactors() { return CmdUtils.parseMultipleDoubleArrays( downsamplingFactors ); }
+        public Integer getNumLevels() { return numLevels; }
     }
 
     static class VVDBlockMetadata implements Serializable
