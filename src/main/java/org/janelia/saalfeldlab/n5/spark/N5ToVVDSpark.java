@@ -662,7 +662,9 @@ public class N5ToVVDSpark
 
         final String outputDatasetPath = parsedArgs.getOutputDatasetPath();
         double[][] downsamplingFactors = parsedArgs.getDownsamplingFactors();
-        final Integer numLevels = parsedArgs.getNumLevels();
+        double[] minDownsamplingFactors = parsedArgs.getMinDownsamplingFactors();
+        double[] maxDownsamplingFactors = parsedArgs.getMaxDownsamplingFactors();
+        Integer numLevels = parsedArgs.getNumLevels();
 
         int bit_depth = 8;
         final int[] outputBlockSize;
@@ -690,55 +692,6 @@ public class N5ToVVDSpark
                 }
             }
 
-            if (downsamplingFactors == null && numLevels != null && numLevels > 0)
-            {
-                if (downsamplingFactors == null)
-                {
-                    downsamplingFactors = new double[numLevels][1];
-                    downsamplingFactors[0][0] = 1.0;
-                    for (int i = 1; i <= numLevels; i++)
-                        downsamplingFactors[i][0] = 1.0 / (1.0 - 0.9 / numLevels * i);
-                }
-                else
-                {
-                    /*
-                    double[][] newDownsamplingFactors = new double[numLevels][];
-                    double[] last = null;
-                    for (int i = 0; i <= numLevels; i++) {
-                        if (i < downsamplingFactors.length) {
-                            newDownsamplingFactors[i] = downsamplingFactors[i];
-                            last = newDownsamplingFactors[i];
-                        } else if (last != null) {
-                            newDownsamplingFactors[i] = new double[inputDimensions.length];
-                            double tmp = -1.0;
-                            for  (int d = 0; d < inputDimensions.length; d++) {
-                                if (d < last.length) {
-                                    final double sc = last[d] > 10 ?
-                                            last[d] :
-                                            (1.0 / last[d]) - (1.0 / last[d] - 0.1) / (numLevels - downsamplingFactors.length) * (i - downsamplingFactors.length);
-                                    newDownsamplingFactors[i][d] = 1.0 / sc;
-                                    tmp = newDownsamplingFactors[i][d];
-                                } else {
-                                    newDownsamplingFactors[i][d] = tmp;
-                                }
-                            }
-                        } else
-                            break;
-                    }
-                    downsamplingFactors = newDownsamplingFactors;
-                    */
-                }
-            }
-            else
-            {
-                if (downsamplingFactors == null)
-                {
-                    downsamplingFactors = new double[6][1];
-                    for (int i = 0; i <= 5; i++)
-                        downsamplingFactors[i][0] = 1.0 / (1.0 - 0.9 / 5 * i);
-                }
-            }
-
             final N5Reader n5Input = n5InputSupplier.get();
             final DatasetAttributes inputAttributes = n5Input.getDatasetAttributes( parsedArgs.getInputDatasetPath() );
 
@@ -749,6 +702,38 @@ public class N5ToVVDSpark
             outputCompression = parsedArgs.getCompression() != null ? parsedArgs.getCompression() : inputCompression;
             final DataType outputDataType = parsedArgs.getDataType() != null ? parsedArgs.getDataType() : inputDataType;
             final long[] inputDimensions = inputAttributes.getDimensions();
+
+            if ( (numLevels != null && numLevels > 0) || minDownsamplingFactors != null || maxDownsamplingFactors != null || downsamplingFactors == null )
+            {
+                if (numLevels == null || numLevels <= 0)
+                    numLevels = new Integer(5);
+                if (minDownsamplingFactors == null) {
+                    minDownsamplingFactors = new double[1];
+                    minDownsamplingFactors[0] = 1.0;
+                }
+                if (maxDownsamplingFactors == null) {
+                    maxDownsamplingFactors = new double[1];
+                    maxDownsamplingFactors[0] = 10.0;
+                }
+
+                double[][] newDownsamplingFactors = new double[numLevels][];
+                for (int i = 0; i < numLevels; i++) {
+                    newDownsamplingFactors[i] = new double[inputDimensions.length];
+                    for  (int d = 0; d < inputDimensions.length; d++) {
+                        int minid = d;
+                        int maxid = d;
+                        if (d >= minDownsamplingFactors.length)
+                            minid = minDownsamplingFactors.length - 1;
+                        if (d >= maxDownsamplingFactors.length)
+                            maxid = maxDownsamplingFactors.length - 1;
+                        if (numLevels > 1)
+                            newDownsamplingFactors[i][d] = minDownsamplingFactors[minid] + (maxDownsamplingFactors[maxid] - minDownsamplingFactors[minid]) / (numLevels-1) * i;
+                        else
+                            newDownsamplingFactors[i][d] = minDownsamplingFactors[minid];
+                    }
+                }
+                downsamplingFactors = newDownsamplingFactors;
+            }
 
             switch (outputDataType) {
                 case UINT8:
@@ -805,6 +790,8 @@ public class N5ToVVDSpark
                         dval = last;
                     adjustedDownsamplingFactor[d] = (double) inputDimensions[d] / (long) (inputDimensions[d] / dval + 0.5);
                 }
+
+                System.out.println("adjustedDownsamplingFactor:" + Arrays.toString(adjustedDownsamplingFactor));
 
                 res_strs.add(String.format("xspc=\"%f\" yspc=\"%f\" zspc=\"%f\"",
                         pixelResolution[0]*adjustedDownsamplingFactor[0], pixelResolution[1]*adjustedDownsamplingFactor[1], pixelResolution[2]*adjustedDownsamplingFactor[2]));
@@ -893,11 +880,19 @@ public class N5ToVVDSpark
         private String outputDatasetPath;
 
         @Option(name = "-f", aliases = { "--factors" }, required = false, handler = StringArrayOptionHandler.class,
-                usage = "Downsampling factors. If using multiple, each factor builds on the last.")
+                usage = "Downsampling factors. If using multiple, each factor builds on the last. This cannot be used with --min_factors, --max_factors and --levels")
         private String[] downsamplingFactors;
 
+        @Option(name = "-fmin", aliases = { "--min_factors" }, required = false, handler = StringArrayOptionHandler.class,
+                usage = "Minimum downsampling factors. Default value: 0")
+        private String minDownsamplingFactorsStr;
+
+        @Option(name = "-fmax", aliases = { "--max_factors" }, required = false, handler = StringArrayOptionHandler.class,
+                usage = "Maximum downsampling factors. Default value: 10")
+        private String maxDownsamplingFactorsStr;
+
         @Option(name = "-l", aliases = { "--levels" }, required = false,
-                usage = "Number of levels in a resolution pyramid.")
+                usage = "Number of levels in a resolution pyramid. Default value: 6")
         private Integer numLevels;
 
         @Option(name = "-b", aliases = { "--blockSize" }, required = false,
@@ -922,6 +917,8 @@ public class N5ToVVDSpark
         private Double maxValue;
 
         private int[] blockSize;
+        private double[] minDownsamplingFactors;
+        private double[] maxDownsamplingFactors;
         private boolean parsedSuccessfully = false;
 
         public Arguments( final String... args ) throws IllegalArgumentException
@@ -935,6 +932,8 @@ public class N5ToVVDSpark
                 parser.parseArgument( args );
 
                 blockSize = blockSizeStr != null ? CmdUtils.parseIntArray( blockSizeStr ) : null;
+                minDownsamplingFactors = minDownsamplingFactorsStr != null ? CmdUtils.parseDoubleArray( minDownsamplingFactorsStr ) : null;
+                maxDownsamplingFactors = maxDownsamplingFactorsStr != null ? CmdUtils.parseDoubleArray( maxDownsamplingFactorsStr ) : null;
 
                 if ( Objects.isNull( minValue ) != Objects.isNull( maxValue ) )
                     throw new IllegalArgumentException( "minValue and maxValue should be either both specified or omitted." );
@@ -960,6 +959,8 @@ public class N5ToVVDSpark
         public DataType getDataType() { return dataType; }
         public Pair< Double, Double > getValueRange() { return Objects.nonNull( minValue ) && Objects.nonNull( maxValue ) ? new ValuePair<>( minValue, maxValue ) : null; }
         public double[][] getDownsamplingFactors() { return CmdUtils.parseMultipleDoubleArrays( downsamplingFactors ); }
+        public double[] getMinDownsamplingFactors() { return minDownsamplingFactors; }
+        public double[] getMaxDownsamplingFactors() { return maxDownsamplingFactors; }
         public Integer getNumLevels() { return numLevels; }
     }
 
