@@ -677,7 +677,7 @@ public class N5ToVVDSpark
         ) )
         {
             final N5ReaderSupplier n5InputSupplier = () -> new N5FSReader( parsedArgs.getInputN5Path() );
-            final N5WriterSupplier n5OutputSupplier = () -> new N5FSWriter( parsedArgs.getOutputN5Path() );
+            final N5WriterSupplier n5OutputSupplier = () -> new N5FSWriter( parsedArgs.getOutputDatasetPath() );
 
             //if ( outputDatasetPath.length != downsamplingFactors.length )
             //    throw new IllegalArgumentException( "Number of output datasets does not match downsampling factors!" );
@@ -796,14 +796,22 @@ public class N5ToVVDSpark
                 res_strs.add(String.format("xspc=\"%f\" yspc=\"%f\" zspc=\"%f\"",
                         pixelResolution[0]*adjustedDownsamplingFactor[0], pixelResolution[1]*adjustedDownsamplingFactor[1], pixelResolution[2]*adjustedDownsamplingFactor[2]));
 
+                int[] blockSize = parsedArgs.getBlockSize();
+                if (i == downsamplingFactors.length - 1) {
+                    final int dim = inputDimensions.length;
+                    blockSize = new int[ dim ];
+                    for ( int d = 0; d < dim; ++d )
+                        blockSize[d] = (int)(inputDimensions[d] / adjustedDownsamplingFactor[d] + 0.5);
+                }
+
                 vvdxml.add(downsample(
                         sparkContext,
                         n5InputSupplier,
                         parsedArgs.getInputDatasetPath(),
                         n5OutputSupplier,
-                        outputDatasetPath + File.separator + String.format("vvd_Lv%d_Ch0_Fr0_data0", i),
+                        outputDatasetPath + File.separator + Paths.get(outputDatasetPath).getFileName() + String.format("_Lv%d_Ch0_Fr0_data0", i),
                         adjustedDownsamplingFactor,
-                        Optional.ofNullable(parsedArgs.getBlockSize()),
+                        Optional.ofNullable(blockSize),
                         Optional.ofNullable(parsedArgs.getCompression()),
                         Optional.ofNullable(parsedArgs.getDataType()),
                         Optional.ofNullable(parsedArgs.getValueRange()),
@@ -871,12 +879,8 @@ public class N5ToVVDSpark
                 usage = "Path to the input dataset within the N5 container (e.g. data/group/s0).")
         private String inputDatasetPath;
 
-        @Option(name = "-no", aliases = { "--outputN5Path" }, required = false,
-                usage = "Path to the output N5 container (by default the output dataset is stored within the same container as the input dataset).")
-        private String n5OutputPath;
-
-        @Option(name = "-o", aliases = { "--outputDatasetPath" }, required = true,
-                usage = "Path(s) to the output dataset to be created (e.g. data/group/s1).")
+        @Option(name = "-o", aliases = { "--outputVVDPath" }, required = true,
+                usage = "Path to the output vvd dataset to be created (e.g. path/to/vvd).")
         private String outputDatasetPath;
 
         @Option(name = "-f", aliases = { "--factors" }, required = false, handler = StringArrayOptionHandler.class,
@@ -938,8 +942,6 @@ public class N5ToVVDSpark
                 if ( Objects.isNull( minValue ) != Objects.isNull( maxValue ) )
                     throw new IllegalArgumentException( "minValue and maxValue should be either both specified or omitted." );
 
-                n5OutputPath = outputDatasetPath;
-
                 parsedSuccessfully = true;
             }
             catch ( final CmdLineException e )
@@ -951,7 +953,6 @@ public class N5ToVVDSpark
         }
 
         public String getInputN5Path() { return n5InputPath; }
-        public String getOutputN5Path() { return n5OutputPath != null ? n5OutputPath : n5InputPath; }
         public String getInputDatasetPath() { return inputDatasetPath; }
         public String getOutputDatasetPath() { return outputDatasetPath; }
         public int[] getBlockSize() { return blockSize; }
