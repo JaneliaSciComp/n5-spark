@@ -896,7 +896,7 @@ public class N5ToVVDSpark
         private String maxDownsamplingFactorsStr;
 
         @Option(name = "-l", aliases = { "--levels" }, required = false,
-                usage = "Number of levels in a resolution pyramid. Default value: 6")
+                usage = "Number of levels in a resolution pyramid. Default value: 5")
         private Integer numLevels;
 
         @Option(name = "-b", aliases = { "--blockSize" }, required = false,

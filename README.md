@@ -347,7 +347,10 @@ If the block size argument is omitted, the resulting dataset will have the same 
   -ni <path to n5 root> 
   -i <input dataset> 
   -o <output path> 
-  -f <downsampling factors> 
+  -l <number of resolution levels. default value: 5> 
+  -fmin <minimum values of downsampling factors. default value: 1.0> 
+  -fmax <maximum values of downsampling factors. default value: 10.0> 
+  -f <Downsampling factors. If using multiple, each factor builds on the last. This cannot be used with --min_factors, --max_factors and --levels> 
   [-b <block size>]
   [-c <compression>]
   ```
@@ -360,14 +363,54 @@ If the block size argument is omitted, the resulting dataset will have the same 
   -ni <path to n5 root> 
   -i <input dataset> 
   -o <output path> 
-  -f <downsampling factors> 
+  -l <number of resolution levels. default value: 5> 
+  -fmin <minimum values of downsampling factors. default value: 1.0> 
+  -fmax <maximum values of downsampling factors. default value: 10.0> 
+  -f <Downsampling factors. If using multiple, each factor builds on the last. This cannot be used with --min_factors, --max_factors and --levels> 
   [-b <block size>]
   [-c <compression>]
   ```
   </details>
   
   example:
-  ```n5-to-vvd.py -ni /n5_input -i c0/s0 -o /vvd_output -f 1,1,1 -f 2,2,2 -b 128,128,128 -c GZIP```
+  ```n5-to-vvd.py -ni /n5_input -i c0/s0 -o /vvd_output -l 5 -fmin 1 -fmax 10 -b 128,128,128 -c GZIP```
+
+### Slice TIFF series to VVD Converter
+
+  <details>
+  <summary><b>Run on Janelia cluster</b></summary>
+  
+  ```bash
+  spark-janelia/slice-tiff-to-vvd.py 
+  <number of cluster nodes> 
+  -i <input directory> 
+  -o <output path> 
+  -l <number of resolution levels. default value: 5> 
+  -fmin <minimum values of downsampling factors. default value: 1.0> 
+  -fmax <maximum values of downsampling factors. default value: 10.0> 
+  -f <Downsampling factors. If using multiple, each factor builds on the last. This cannot be used with --min_factors, --max_factors and --levels> 
+  [-b <block size>]
+  [-c <compression>]
+  ```
+  </details>  
+  <details> 
+  <summary><b>Run on local machine</b></summary>
+  
+  ```bash
+  spark-local/slice-tiff-to-vvd.py 
+  -i <input directory> 
+  -o <output path> 
+  -l <number of resolution levels. default value: 5> 
+  -fmin <minimum values of downsampling factors. default value: 1.0> 
+  -fmax <maximum values of downsampling factors. default value: 10.0> 
+  -f <Downsampling factors. If using multiple, each factor builds on the last. This cannot be used with --min_factors, --max_factors and --levels> 
+  [-b <block size>]
+  [-c <compression>]
+  ```
+  </details>
+  
+  example:
+  ```slice-tiff-to-vvd.py -i path/to/tiff/directory -o /vvd_output -l 5 -fmin 1 -fmax 10 -b 128,128,128 -c GZIP```
 
 ### Slice TIFF series to N5 converter
 
