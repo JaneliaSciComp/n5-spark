@@ -202,6 +202,7 @@ public class SliceTiffToVVDSpark {
     public static final String PIXEL_RESOLUTION_ATTRIBUTE_KEY = "pixelResolution";
 
     public static final String TEMP_N5_DIR = "temp_n5_dir_tif";
+    public static final String TEMP_N5_DATASET = "temp_n5_dataset";
 
     public static < T extends NativeType< T > > void createTempN5DatasetFromTiff(
             final JavaSparkContext sparkContext,
@@ -272,6 +273,7 @@ public class SliceTiffToVVDSpark {
 
         final String inputDirPath = parsedArgs.getInputDirPath();
         final String outputDatasetPath = parsedArgs.getOutputDatasetPath();
+        final String tempN5Path = outputDatasetPath + File.separator + TEMP_N5_DIR;
         double[][] downsamplingFactors = parsedArgs.getDownsamplingFactors();
         double[] minDownsamplingFactors = parsedArgs.getMinDownsamplingFactors();
         double[] maxDownsamplingFactors = parsedArgs.getMaxDownsamplingFactors();
@@ -287,9 +289,9 @@ public class SliceTiffToVVDSpark {
                 .set( "spark.serializer", "org.apache.spark.serializer.KryoSerializer" )
         ) )
         {
-            final N5WriterSupplier n5OutputSupplier = () -> new N5FSWriter( parsedArgs.getOutputN5Path() );
+            final N5WriterSupplier n5OutputSupplier = () -> new N5FSWriter( tempN5Path );
 
-            final String tmpDataset = TEMP_N5_DIR;
+            final String tmpDataset = TEMP_N5_DATASET;
             createTempN5DatasetFromTiff(
                     sparkContext,
                     inputDirPath,
@@ -421,7 +423,7 @@ public class SliceTiffToVVDSpark {
                 ));
             }
 
-            N5RemoveSpark.remove( sparkContext, n5OutputSupplier, tmpDataset );
+            N5RemoveSpark.remove( sparkContext, n5OutputSupplier );
         }
 
         final Path xmlpath = Paths.get(outputDatasetPath, Paths.get(outputDatasetPath).getFileName() + ".vvd");
