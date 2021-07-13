@@ -382,9 +382,11 @@ public class N5ToVVDSpark
             System.err.println(x);
         }
 
-        //System.out.println( "dim: " + outputDimensions[0] + " " + outputDimensions[1] + " "+ outputDimensions[2]);
+        //
 
-        List<List<VVDBlockMetadata>> result = sparkContext.parallelize( blockIndexes, Math.min( blockIndexes.size(), MAX_PARTITIONS ) ).map( blockIndex ->
+        System.out.println( "Number of partitions: " + Math.min( blockIndexes.size(), sparkContext.defaultParallelism()*2 ));
+
+        List<List<VVDBlockMetadata>> result = sparkContext.parallelize( blockIndexes, Math.min( blockIndexes.size(), sparkContext.defaultParallelism()*2 ) ).map( blockIndex ->
         {
             final CellGrid cellGrid = new CellGrid( outputDimensions, outputBlockSize );
             final long[] blockGridPosition = new long[ cellGrid.numDimensions() ];
@@ -799,10 +801,16 @@ public class N5ToVVDSpark
                 int[] blockSize = parsedArgs.getBlockSize();
                 if (i == downsamplingFactors.length - 1) {
                     final int dim = inputDimensions.length;
-                    blockSize = new int[ dim ];
-                    for ( int d = 0; d < dim; ++d )
-                        blockSize[d] = (int)(inputDimensions[d] / adjustedDownsamplingFactor[d] + 0.5);
+                    final int[] newBlockSize = new int[ dim ];
+                    long elemnum = bit_depth / 8;
+                    for ( int d = 0; d < dim; ++d ) {
+                        newBlockSize[d] = (int) (inputDimensions[d] / adjustedDownsamplingFactor[d] + 0.5);
+                        elemnum *= (long)newBlockSize[d];
+                    }
+                    if (elemnum <= Integer.MAX_VALUE)
+                        blockSize = newBlockSize;
                 }
+                System.out.println("adjustedBlockSize:" + Arrays.toString(blockSize));
 
                 vvdxml.add(downsample(
                         sparkContext,
@@ -1217,6 +1225,8 @@ public class N5ToVVDSpark
                 try (final LockedFileChannel lockedChannel = LockedFileChannel.openForWriting(path)/*LockedFileChannel.openForAppend(path)*/) {
                     final long file_offset = lockedChannel.getFileChannel().position();
                     final OutputStream ostream = Channels.newOutputStream(lockedChannel.getFileChannel());
+                    System.out.println("id: " + brickID + " " + dataBlock.getNumElements() + " " + (dataBlock.getNumElements() * 8));
+                    System.out.println(Arrays.toString(dataBlock.getSize()));
                     DefaultBlockWriter.writeBlock(ostream, attributes, dataBlock);
                     final long data_size = 0L;//lockedChannel.getFileChannel().position() - file_offset;
                     final long[] bound_min = {gridPosition[0] * blockSize[0], gridPosition[1] * blockSize[1], gridPosition[2] * blockSize[2]};

@@ -250,7 +250,8 @@ public class SliceTiffToVVDSpark {
         // convert to temporary N5 dataset with block size = 1 in the slice dimension and increased block size in other dimensions
         n5TempOutput.createDataset( tempDatasetPath, inputDimensions, tmpBlockSize, inputDataType, compression );
         final List< Integer > sliceIndices = IntStream.range( 0, tiffSliceFilepaths.size() ).boxed().collect( Collectors.toList() );
-        sparkContext.parallelize( sliceIndices, Math.min( sliceIndices.size(), MAX_PARTITIONS ) ).foreach( sliceIndex ->
+        System.out.println( "Number of partitions: " + Math.min( sliceIndices.size(), sparkContext.defaultParallelism()*2 ));
+        sparkContext.parallelize( sliceIndices, Math.min( sliceIndices.size(), sparkContext.defaultParallelism()*2 ) ).foreach( sliceIndex ->
                 {
                     final ImagePlus imp = tiffReader.openTiff( tiffSliceFilepaths.get( sliceIndex ) );
                     final RandomAccessibleInterval< T > img = ( RandomAccessibleInterval< T > ) ImagePlusImgs.from( imp );
@@ -403,10 +404,16 @@ public class SliceTiffToVVDSpark {
                 int[] blockSize = parsedArgs.getBlockSize();
                 if (i == downsamplingFactors.length - 1) {
                     final int dim = inputDimensions.length;
-                    blockSize = new int[ dim ];
-                    for ( int d = 0; d < dim; ++d )
-                        blockSize[d] = (int)(inputDimensions[d] / adjustedDownsamplingFactor[d] + 0.5);
+                    final int[] newBlockSize = new int[ dim ];
+                    long elemnum = bit_depth / 8;
+                    for ( int d = 0; d < dim; ++d ) {
+                        newBlockSize[d] = (int) (inputDimensions[d] / adjustedDownsamplingFactor[d] + 0.5);
+                        elemnum *= (long)newBlockSize[d];
+                    }
+                    if (elemnum <= Integer.MAX_VALUE)
+                        blockSize = newBlockSize;
                 }
+                System.out.println("adjustedBlockSize:" + Arrays.toString(blockSize));
 
                 vvdxml.add(N5ToVVDSpark.downsample(
                         sparkContext,
