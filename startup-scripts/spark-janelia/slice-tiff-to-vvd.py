@@ -14,7 +14,9 @@ flintstone_relpath = os.path.join('flintstone', 'flintstone-lsd.sh')
 flintstone_path = os.path.join(curr_script_dir, flintstone_relpath)
 
 os.environ['N_DRIVER_THREADS'] = '2'
-os.environ['MEMORY_PER_NODE'] = '115'
+os.environ['MEMORY_PER_NODE'] = '386'
+os.environ['N_EXECUTORS_PER_NODE'] = '1'
+os.environ['N_CORES_PER_EXECUTOR'] = '32'
 
 nodes = int(sys.argv[1])
 

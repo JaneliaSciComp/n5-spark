@@ -204,13 +204,15 @@ public class SliceTiffToVVDSpark {
     public static final String TEMP_N5_DIR = "temp_n5_dir_tif";
     public static final String TEMP_N5_DATASET = "temp_n5_dataset";
 
-    public static < T extends NativeType< T > > void createTempN5DatasetFromTiff(
+    public static < I extends NativeType< I > & RealType< I >, O extends NativeType< O > & RealType< O > > void createTempN5DatasetFromTiff(
             final JavaSparkContext sparkContext,
             final String inputDirPath,
             final N5WriterSupplier n5OutputSupplier,
             final String tempDatasetPath,
             final int[] blockSize,
-            final Compression compression) throws IOException
+            final Compression compression,
+            final Optional< DataType > dataTypeOptional,
+            final Optional< Pair< Double, Double > > valueRangeOptional) throws IOException
     {
         final TiffUtils.TiffReader tiffReader = new TiffUtils.FileTiffReader();
         final List< String > tiffSliceFilepaths = Files.walk( Paths.get( inputDirPath ) )
@@ -227,13 +229,15 @@ public class SliceTiffToVVDSpark {
         final DataType inputDataType;
         {
             final ImagePlus imp = tiffReader.openTiff( tiffSliceFilepaths.iterator().next() );
-            final RandomAccessibleInterval< T > img = ( RandomAccessibleInterval< T > ) ImagePlusImgs.from( imp );
+            final RandomAccessibleInterval< I > img = ( RandomAccessibleInterval< I > ) ImagePlusImgs.from( imp );
             if ( img.numDimensions() != 2 )
                 throw new RuntimeException( "TIFF images in the specified directory are not 2D" );
 
             inputDimensions = new long[] { img.dimension( 0 ), img.dimension( 1 ), tiffSliceFilepaths.size() };
             inputDataType = N5Utils.dataType( Util.getTypeFromInterval( img ) );
         }
+
+        final DataType outputDataType = dataTypeOptional.isPresent() ? dataTypeOptional.get() : inputDataType;
 
         final N5Writer n5TempOutput = n5OutputSupplier.get();
         final int[] tmpBlockSize = new int[ 3 ];
@@ -247,20 +251,76 @@ public class SliceTiffToVVDSpark {
             //Do nothing
         }
 
+
+        // derive input and output value range
+        final double minInputValue, maxInputValue;
+        if ( valueRangeOptional.isPresent() )
+        {
+            minInputValue = valueRangeOptional.get().getA();
+            maxInputValue = valueRangeOptional.get().getB();
+        }
+        else
+        {
+            if ( inputDataType == DataType.FLOAT32 || inputDataType == DataType.FLOAT64 )
+            {
+                minInputValue = 0;
+                maxInputValue = 1;
+            }
+            else
+            {
+                final I inputType = N5Utils.type( inputDataType );
+                minInputValue = inputType.getMinValue();
+                maxInputValue = inputType.getMaxValue();
+            }
+        }
+
+        final double minOutputValue, maxOutputValue;
+        if ( outputDataType == DataType.FLOAT32 || outputDataType == DataType.FLOAT64 )
+        {
+            minOutputValue = 0;
+            maxOutputValue = 1;
+        }
+        else
+        {
+            final O outputType = N5Utils.type( outputDataType );
+            minOutputValue = outputType.getMinValue();
+            maxOutputValue = outputType.getMaxValue();
+        }
+
+        System.out.println( "Input value range: " + Arrays.toString( new double[] { minInputValue, maxInputValue } ) );
+        System.out.println( "Output value range: " + Arrays.toString( new double[] { minOutputValue, maxOutputValue } ) );
+
+
         // convert to temporary N5 dataset with block size = 1 in the slice dimension and increased block size in other dimensions
-        n5TempOutput.createDataset( tempDatasetPath, inputDimensions, tmpBlockSize, inputDataType, compression );
+        n5TempOutput.createDataset( tempDatasetPath, inputDimensions, tmpBlockSize, outputDataType, compression );
         final List< Integer > sliceIndices = IntStream.range( 0, tiffSliceFilepaths.size() ).boxed().collect( Collectors.toList() );
         System.out.println( "Number of partitions: " + Math.min( sliceIndices.size(), sparkContext.defaultParallelism()*2 ));
         sparkContext.parallelize( sliceIndices, Math.min( sliceIndices.size(), sparkContext.defaultParallelism()*2 ) ).foreach( sliceIndex ->
                 {
                     final ImagePlus imp = tiffReader.openTiff( tiffSliceFilepaths.get( sliceIndex ) );
-                    final RandomAccessibleInterval< T > img = ( RandomAccessibleInterval< T > ) ImagePlusImgs.from( imp );
+                    final RandomAccessibleInterval< I > img = ( RandomAccessibleInterval< I > ) ImagePlusImgs.from( imp );
+
+                    final O outputType = N5Utils.type( outputDataType );
+                    final RandomAccessible< O > convertedSource;
+                    if ( inputDataType == outputDataType )
+                    {
+                        convertedSource = ( RandomAccessible< O > ) img;
+                    }
+                    else
+                    {
+                        convertedSource = Converters.convert( img, new N5ToVVDSpark.ClampingConverter<>(
+                                minInputValue, maxInputValue,
+                                minOutputValue, maxOutputValue
+                        ), outputType.createVariable() );
+                    }
+                    final RandomAccessibleInterval< O > convertedSourceInterval = Views.interval( convertedSource, img);
+
                     N5Utils.saveNonEmptyBlock(
-                            Views.addDimension( img, 0, 0 ),
+                            Views.addDimension( convertedSourceInterval, 0, 0 ),
                             n5OutputSupplier.get(),
                             tempDatasetPath,
                             new long[] { 0, 0, sliceIndex },
-                            Util.getTypeFromInterval( img ).createVariable()
+                            Util.getTypeFromInterval( convertedSourceInterval ).createVariable()
                     );
                 }
         );
@@ -299,7 +359,9 @@ public class SliceTiffToVVDSpark {
                     n5OutputSupplier,
                     tmpDataset,
                     parsedArgs.getBlockSize(),
-                    parsedArgs.getCompression()
+                    parsedArgs.getCompression(),
+                    Optional.ofNullable(parsedArgs.getDataType()),
+                    Optional.ofNullable(parsedArgs.getValueRange())
             );
             final N5Writer n5TempOutput = n5OutputSupplier.get();
             final DatasetAttributes inputAttributes = n5TempOutput.getDatasetAttributes( tmpDataset );
@@ -425,7 +487,7 @@ public class SliceTiffToVVDSpark {
                         Optional.ofNullable(blockSize),
                         Optional.ofNullable(parsedArgs.getCompression()),
                         Optional.ofNullable(parsedArgs.getDataType()),
-                        Optional.ofNullable(parsedArgs.getValueRange()),
+                        Optional.ofNullable(null/*parsedArgs.getValueRange()*/),
                         true
                 ));
             }
