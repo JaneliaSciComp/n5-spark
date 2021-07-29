@@ -272,7 +272,7 @@ public class N5ToVVDSpark
             final Optional< Compression > compressionOptional,
             final Optional< DataType > dataTypeOptional,
             final Optional< Pair< Double, Double > > valueRangeOptional,
-            final boolean overwriteExisting ) throws IOException
+            final boolean overwriteExisting) throws IOException
     {
         final N5Reader n5Input = n5InputSupplier.get();
         final DatasetAttributes inputAttributes = n5Input.getDatasetAttributes( inputDatasetPath );
@@ -382,75 +382,69 @@ public class N5ToVVDSpark
             System.err.println(x);
         }
 
-        //
-
         System.out.println( "Number of partitions: " + Math.min( blockIndexes.size(), sparkContext.defaultParallelism()*2 ));
 
-        List<List<VVDBlockMetadata>> result = sparkContext.parallelize( blockIndexes, Math.min( blockIndexes.size(), sparkContext.defaultParallelism()*2 ) ).map( blockIndex ->
+        List<List<VVDBlockMetadata>> result = sparkContext.parallelize(blockIndexes, Math.min(blockIndexes.size(), sparkContext.defaultParallelism() * 2)).map(blockIndex ->
         {
-            final CellGrid cellGrid = new CellGrid( outputDimensions, outputBlockSize );
-            final long[] blockGridPosition = new long[ cellGrid.numDimensions() ];
-            cellGrid.getCellGridPositionFlat( blockIndex, blockGridPosition );
+            final CellGrid cellGrid = new CellGrid(outputDimensions, outputBlockSize);
+            final long[] blockGridPosition = new long[cellGrid.numDimensions()];
+            cellGrid.getCellGridPositionFlat(blockIndex, blockGridPosition);
 
-            final long[] sourceMin = new long[ dim ], sourceMax = new long[ dim ], targetMin = new long[ dim ], targetMax = new long[ dim ];
-            final int[] cellDimensions = new int[ dim ];
-            cellGrid.getCellDimensions( blockGridPosition, targetMin, cellDimensions );
-            for ( int d = 0; d < dim; ++d )
-            {
-                targetMax[ d ] = targetMin[ d ] + cellDimensions[ d ] - 1;
-                sourceMin[ d ] = (long)(targetMin[ d ] * downsamplingFactors[ d ] + 0.5) - 1;
+            final long[] sourceMin = new long[dim], sourceMax = new long[dim], targetMin = new long[dim], targetMax = new long[dim];
+            final int[] cellDimensions = new int[dim];
+            cellGrid.getCellDimensions(blockGridPosition, targetMin, cellDimensions);
+            for (int d = 0; d < dim; ++d) {
+                targetMax[d] = targetMin[d] + cellDimensions[d] - 1;
+                sourceMin[d] = (long) (targetMin[d] * downsamplingFactors[d] + 0.5) - 1;
                 if (sourceMin[d] < 0)
                     sourceMin[d] = 0;
-                sourceMax[ d ] = (long)(targetMax[ d ] * downsamplingFactors[ d ] + 0.5) + 1;
-                if (sourceMax[ d ] > inputDimensions[ d ] - 1)
-                    sourceMax[ d ] = inputDimensions[ d ] - 1;
+                sourceMax[d] = (long) (targetMax[d] * downsamplingFactors[d] + 0.5) + 1;
+                if (sourceMax[d] > inputDimensions[d] - 1)
+                    sourceMax[d] = inputDimensions[d] - 1;
             }
-            final Interval sourceInterval = new FinalInterval( sourceMin, sourceMax );
-            final Interval targetInterval = new FinalInterval( targetMin, targetMax );
+            final Interval sourceInterval = new FinalInterval(sourceMin, sourceMax);
+            final Interval targetInterval = new FinalInterval(targetMin, targetMax);
 
             final N5Reader n5Local = n5InputSupplier.get();
 
-            final RandomAccessibleInterval< I > source = N5Utils.open( n5Local, inputDatasetPath );
-            final RandomAccessibleInterval< I > sourceBlock = Views.offsetInterval( source, sourceInterval );
+            final RandomAccessibleInterval<I> source = N5Utils.open(n5Local, inputDatasetPath);
+            final RandomAccessibleInterval<I> sourceBlock = Views.offsetInterval(source, sourceInterval);
 
             //System.out.println(Arrays.toString(sourceMin)+Arrays.toString(sourceMax) + " " + Views.iterable( sourceBlock ).size());
 
             /* test if empty */
-            final I defaultValue = Util.getTypeFromInterval( sourceBlock ).createVariable();
+            final I defaultValue = Util.getTypeFromInterval(sourceBlock).createVariable();
             boolean isEmpty = true;
-            for ( final I t : Views.iterable( sourceBlock ) )
-            {
-                isEmpty &= defaultValue.valueEquals( t );
-                if ( !isEmpty ) break;
+            for (final I t : Views.iterable(sourceBlock)) {
+                isEmpty &= defaultValue.valueEquals(t);
+                if (!isEmpty) break;
             }
-            if ( isEmpty )
+            if (isEmpty)
                 return new ArrayList<VVDBlockMetadata>();
 
             /* do if not empty */
-            final RandomAccessibleInterval< I > sourceBlock2 = Views.interval( source, sourceInterval );
-            final RandomAccessibleInterval< I > targetBlock = new ArrayImgFactory<>( defaultValue ).create( targetInterval );
-            downsampleFunction( sourceBlock2, inputDimensions, targetBlock, targetInterval, downsamplingFactors );
+            final RandomAccessibleInterval<I> sourceBlock2 = Views.interval(source, sourceInterval);
+            final RandomAccessibleInterval<I> targetBlock = new ArrayImgFactory<>(defaultValue).create(targetInterval);
+            downsampleFunction(sourceBlock2, inputDimensions, targetBlock, targetInterval, downsamplingFactors);
 
-            final O outputType = N5Utils.type( outputDataType );
-            final RandomAccessible< O > convertedSource;
-            if ( inputDataType == outputDataType )
-            {
-                convertedSource = ( RandomAccessible< O > ) targetBlock;
-            }
-            else
-            {
-                convertedSource = Converters.convert( targetBlock, new ClampingConverter<>(
+            final O outputType = N5Utils.type(outputDataType);
+            final RandomAccessible<O> convertedSource;
+            if (inputDataType == outputDataType) {
+                convertedSource = (RandomAccessible<O>) targetBlock;
+            } else {
+                convertedSource = Converters.convert(targetBlock, new ClampingConverter<>(
                         minInputValue, maxInputValue,
                         minOutputValue, maxOutputValue
-                ), outputType.createVariable() );
+                ), outputType.createVariable());
             }
-            final RandomAccessibleInterval< O > convertedSourceInterval = Views.interval( convertedSource, targetBlock);
+            final RandomAccessibleInterval<O> convertedSourceInterval = Views.interval(convertedSource, targetBlock);
 
-            final long[] grid_dim = new long[ dim ];
+            final long[] grid_dim = new long[dim];
             cellGrid.gridDimensions(grid_dim);
-            return saveNonEmptyBlock( convertedSourceInterval, outputDatasetPath, n5OutputSupplier.get().getDatasetAttributes(TEMP_N5_DIR) , blockGridPosition, grid_dim, outputType.createVariable() );
+            return saveNonEmptyBlock(convertedSourceInterval, outputDatasetPath, n5OutputSupplier.get().getDatasetAttributes(TEMP_N5_DIR), blockGridPosition, grid_dim, outputType.createVariable());
 
-        } ).collect();
+        }).collect();
+
 
         ArrayList<VVDBlockMetadata> final_res = new ArrayList<VVDBlockMetadata>();
         for(List<VVDBlockMetadata> ls : result) {

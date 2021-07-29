@@ -243,14 +243,13 @@ public class SliceTiffToVVDSpark {
         final int[] tmpBlockSize = new int[ 3 ];
         tmpBlockSize[ 2 ] = 1;
         for ( int d = 0; d < 2; ++d )
-            tmpBlockSize[ d ] = blockSize[ d ] * Math.max( ( int ) Math.round( Math.sqrt( blockSize[ 2 ] ) ), 1 );
+            tmpBlockSize[ d ] = blockSize[ d ];// * Math.max( ( int ) Math.round( Math.sqrt( blockSize[ 2 ] ) ), 1 );
 
         try {
             N5RemoveSpark.remove(sparkContext, n5OutputSupplier, tempDatasetPath);
         } catch (IOException e) {
             //Do nothing
         }
-
 
         // derive input and output value range
         final double minInputValue, maxInputValue;

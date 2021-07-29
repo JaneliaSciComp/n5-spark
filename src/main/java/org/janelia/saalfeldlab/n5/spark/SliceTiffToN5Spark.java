@@ -177,7 +177,7 @@ public class SliceTiffToN5Spark
 		final int[] tmpBlockSize = new int[ 3 ];
 		tmpBlockSize[ 2 ] = 1;
 		for ( int d = 0; d < 2; ++d )
-			tmpBlockSize[ d ] = blockSize[ d ] * Math.max( ( int ) Math.round( Math.sqrt( blockSize[ 2 ] ) ), 1 );
+			tmpBlockSize[ d ] = blockSize[ d ];// * Math.max( ( int ) Math.round( Math.sqrt( blockSize[ 2 ] ) ), 1 );
 
 		// convert to temporary N5 dataset with block size = 1 in the slice dimension and increased block size in other dimensions
 		n5.createDataset( tmpDataset, dimensions, tmpBlockSize, dataType, compression );
