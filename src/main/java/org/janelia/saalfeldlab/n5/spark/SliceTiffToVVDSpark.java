@@ -243,12 +243,12 @@ public class SliceTiffToVVDSpark {
         final int[] tmpBlockSize = new int[ 3 ];
         tmpBlockSize[ 2 ] = 1;
         for ( int d = 0; d < 2; ++d )
-            tmpBlockSize[ d ] = blockSize[ d ];// * Math.max( ( int ) Math.round( Math.sqrt( blockSize[ 2 ] ) ), 1 );
+            tmpBlockSize[ d ] = blockSize[ d ];
 
         try {
             N5RemoveSpark.remove(sparkContext, n5OutputSupplier, tempDatasetPath);
         } catch (IOException e) {
-            //Do nothing
+            e.printStackTrace();
         }
 
         // derive input and output value range
@@ -290,7 +290,7 @@ public class SliceTiffToVVDSpark {
         System.out.println( "Output value range: " + Arrays.toString( new double[] { minOutputValue, maxOutputValue } ) );
 
 
-        // convert to temporary N5 dataset with block size = 1 in the slice dimension and increased block size in other dimensions
+        // convert to temporary N5 dataset with block size = 1 in the slice dimension
         n5TempOutput.createDataset( tempDatasetPath, inputDimensions, tmpBlockSize, outputDataType, compression );
         final List< Integer > sliceIndices = IntStream.range( 0, tiffSliceFilepaths.size() ).boxed().collect( Collectors.toList() );
         System.out.println( "Number of partitions: " + Math.min( sliceIndices.size(), sparkContext.defaultParallelism()*2 ));
@@ -549,10 +549,6 @@ public class SliceTiffToVVDSpark {
                 usage = "Path to an input directory containing TIFF slices")
         private String inputDirPath;
 
-        @Option(name = "-no", aliases = { "--outputN5Path" }, required = false,
-                usage = "Path to the output N5 container (by default the output dataset is stored within the same container as the input dataset).")
-        private String n5OutputPath;
-
         @Option(name = "-o", aliases = { "--outputDatasetPath" }, required = true,
                 usage = "Path(s) to the output dataset to be created (e.g. data/group/s1).")
         private String outputDatasetPath;
@@ -622,8 +618,6 @@ public class SliceTiffToVVDSpark {
                 if ( Objects.isNull( minValue ) != Objects.isNull( maxValue ) )
                     throw new IllegalArgumentException( "minValue and maxValue should be either both specified or omitted." );
 
-                n5OutputPath = outputDatasetPath;
-
                 parsedSuccessfully = true;
             }
             catch ( final CmdLineException e )
@@ -635,7 +629,6 @@ public class SliceTiffToVVDSpark {
         }
 
         public String getInputDirPath() { return inputDirPath; }
-        public String getOutputN5Path() { return n5OutputPath != null ? n5OutputPath : inputDirPath; }
         public String getOutputDatasetPath() { return outputDatasetPath; }
         public int[] getBlockSize() { return blockSize; }
         public Compression getCompression() { return n5Compression != null ? n5Compression.get() : null; }

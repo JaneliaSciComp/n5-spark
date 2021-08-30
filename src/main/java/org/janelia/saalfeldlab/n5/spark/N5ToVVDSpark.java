@@ -360,13 +360,6 @@ public class N5ToVVDSpark
                 outputCompression
         );
 
-        // set the downsampling factors attribute
-        final int[] inputAbsoluteDownsamplingFactors = n5Input.getAttribute( inputDatasetPath, DOWNSAMPLING_FACTORS_ATTRIBUTE_KEY, int[].class );
-        final double[] outputAbsoluteDownsamplingFactors = new double[ downsamplingFactors.length ];
-        for ( int d = 0; d < downsamplingFactors.length; ++d )
-            outputAbsoluteDownsamplingFactors[ d ] = downsamplingFactors[ d ] * ( inputAbsoluteDownsamplingFactors != null ? inputAbsoluteDownsamplingFactors[ d ] : 1 );
-        n5Output.setAttribute( TEMP_N5_DIR, DOWNSAMPLING_FACTORS_ATTRIBUTE_KEY, outputAbsoluteDownsamplingFactors );
-
         final CellGrid outputCellGrid = new CellGrid( outputDimensions, outputBlockSize );
         final long numDownsampledBlocks = Intervals.numElements( outputCellGrid.getGridDimensions() );
         final List< Long > blockIndexes = LongStream.range( 0, numDownsampledBlocks ).boxed().collect( Collectors.toList() );
@@ -374,7 +367,7 @@ public class N5ToVVDSpark
         try {
             Files.delete(Paths.get(TEMP_N5_DIR));
         } catch (NoSuchFileException x) {
-            //Do nothing
+            System.err.println(x);
         } catch (DirectoryNotEmptyException x) {
             System.err.format("%s not empty%n", TEMP_N5_DIR);
         } catch (IOException x) {
@@ -409,8 +402,6 @@ public class N5ToVVDSpark
 
             final RandomAccessibleInterval<I> source = N5Utils.open(n5Local, inputDatasetPath);
             final RandomAccessibleInterval<I> sourceBlock = Views.offsetInterval(source, sourceInterval);
-
-            //System.out.println(Arrays.toString(sourceMin)+Arrays.toString(sourceMax) + " " + Views.iterable( sourceBlock ).size());
 
             /* test if empty */
             final I defaultValue = Util.getTypeFromInterval(sourceBlock).createVariable();
@@ -495,37 +486,10 @@ public class N5ToVVDSpark
         }
 
         final_res.sort( comparing(VVDBlockMetadata::getFileOffset) );
-        /*
-        for(int i = 0; i < final_res.size()-1; i++) {
-            final_res.get(i).setDataSize(final_res.get(i+1).getFileOffset() - final_res.get(i).getFileOffset());
-        }
-        try (final LockedFileChannel lockedChannel = LockedFileChannel.openForAppend(Paths.get(outputDatasetPath))) {
-            long fsize = lockedChannel.getFileChannel().position();
-            final_res.get(final_res.size()-1).setDataSize(fsize - final_res.get(final_res.size()-1).getFileOffset());
-        }
-        */
-
-        /*
-        for(VVDBlockMetadata d : final_res) {
-            System.out.println( d.getVVDXMLBrickTag() );
-            System.out.println( d.getVVDXMLFileTag() );
-        }
-        */
 
         return final_res;
     }
-/*
-    static final double a = 0.5; // Catmull-Rom interpolation
-    public static final double cubic(double x) {
-        if (x < 0.0) x = -x;
-        double z = 0.0;
-        if (x < 1.0)
-            z = x*x*(x*(-a+2.0) + (a-3.0)) + 1.0;
-        else if (x < 2.0)
-            z = -a*x*x*x + 5.0*a*x*x - 8.0*a*x + 4.0*a;
-        return z;
-    }
-*/
+
     public static final double cubic(double x) {
         if (x < 0.0) x = -x;
         double z = 0.0;
@@ -559,14 +523,6 @@ public class N5ToVVDSpark
         final long[] maxRequiredInput = new long[ n ];
         output.min( minRequiredInput );
         output.max( maxRequiredInput );
-/*
-        for ( int d = 0; d < n; ++d ) {
-            minRequiredInput[ d ] = (long)((outInterval.min(d) + minRequiredInput[d]) * factor[ d ] + 0.5) - 1;
-            if (minRequiredInput[d] > 0)
-                minRequiredInput[d] = 0;
-            maxRequiredInput[ d ] = (long)((outInterval.min(d) + maxRequiredInput[d]) * factor[ d ] + 0.5) + 1;
-        }
-*/
 
         for ( int d = 0; d < n; ++d ) {
             minRequiredInput[ d ] = (long)(outInterval.min(d) * factor[ d ]) + nmin[d];
@@ -576,77 +532,57 @@ public class N5ToVVDSpark
             if (maxRequiredInput[ d ] > inputDimensinos[ d ] - 1 - 1)
                 maxRequiredInput[ d ] = inputDimensinos[ d ] - 1 - 1;
         }
-        //System.out.println( "min: " + minRequiredInput[0] + " " + minRequiredInput[1] );
-        //System.out.println( "max: " + maxRequiredInput[0] + " " + maxRequiredInput[1] );
 
         final ExtendedRandomAccessibleInterval< T, RandomAccessibleInterval<T> > requiredInput = Views.extendBorder(Views.interval( input, new FinalInterval( minRequiredInput, maxRequiredInput ) ));
 
         final RectangleShape.NeighborhoodsAccessible< T > neighborhoods = new RectangleShape.NeighborhoodsAccessible<>( requiredInput, spanInterval, f );
         final RandomAccess< Neighborhood< T > > block = neighborhoods.randomAccess();
 
-        int size = 16;
+        final int kernel_len = 4;
+        final int size = kernel_len * kernel_len;
         final long znum = nmax[2];
-        final double[] g_pos = new double[2];
-        final double[] base_pos = new double[2];
+        final double[] s_pos = new double[2]; //sampling position in an input image
+        final double[] k_pos = new double[2]; //position of the top-left corner of the kernel in an input image
         final double[] elems = new double[size];
         final Cursor< T > out = Views.iterable( output ).localizingCursor();
-        final RandomAccess< T > indata = requiredInput.randomAccess();
-        long out_count = 0;
         while( out.hasNext() )
         {
             final T o = out.next();
 
             for ( int d = 0; d < n && d < 2; ++d ) {
                 double p0 = (outInterval.min(d) + out.getLongPosition(d) + 0.5) * factor[d];
-                block.setPosition((long)(p0 - 0.5), d);
-                g_pos[d] = p0;
-                base_pos[d] = (long)(p0 - 0.5) - 1;
+                block.setPosition((long)(p0 - 1.0 + 0.5), d); //round(p0 - 1.0)
+                s_pos[d] = p0;
+                k_pos[d] = (long)(p0 - 1.0 + 0.5) - 1; //round(p0 - 1.0) - 1
             }
             for ( int d = 2; d < n; ++d ) {
                 double p0 = (outInterval.min(d) + out.getLongPosition(d) + 0.5) * factor[d];
                 block.setPosition((long)p0, d);
             }
 
-            //if (out_count == 0)
-            //    System.out.println( "Pos: " + g_pos[0] + " " + g_pos[1] );
-
-            double mipval = 0;
+            double maxval = 0;
+            Iterator<T> ite = block.get().iterator();
             for (long zz = 0; zz < znum; zz++) {
-                int count = 0;
-                for (final T i : block.get()) {
-                    elems[count] = i.getRealDouble();
-                    count++;
-                    if (count >= 16)
+                for (int i = 0; i < size; i++) {
+                    if (ite.hasNext())
+                        elems[i] = ite.next().getRealDouble();
+                    else
                         break;
                 }
 
                 double q = 0;
-                for (int v = 0; v <= 3; v++) {
+                for (int v = 0; v < kernel_len; v++) {
                     double p = 0;
-                    for (int u = 0; u <= 3; u++) {
-                        p = p + elems[4 * v + u] * cubic(g_pos[0] - (base_pos[0] + u + 0.5 - 1));
+                    for (int u = 0; u < kernel_len; u++) {
+                        p += elems[4 * v + u] * cubic(s_pos[0] - (k_pos[0] + u + 0.5 - 1));
                     }
-                    q = q + p * cubic(g_pos[1] - (base_pos[1] + v + 0.5 - 1));
+                    q += p * cubic(s_pos[1] - (k_pos[1] + v + 0.5 - 1));
                 }
-                if (mipval < q)
-                    mipval = q;
+                if (maxval < q)
+                    maxval = q;
             }
 
-/*
-            for ( int d = 0; d < n; ++d ) {
-                double p0 = (outInterval.min(d) + out.getLongPosition(d)) * factor[d];
-                indata.setPosition((long)(p0 + 0.5), d);
-            }
-
-            double mipval = 0;
-            for (long zz = 0; zz < znum; zz++) {
-                double q = indata.get().getRealDouble();
-                if (mipval < q)
-                    mipval = q;
-            }
-*/
-            o.setReal( mipval );
-            out_count++;
+            o.setReal( maxval );
         }
     }
 
@@ -1216,16 +1152,13 @@ public class N5ToVVDSpark
                 }
                 final Path path = Paths.get(filepath + "_ID" + brickID);
                 Files.createDirectories(path.getParent());
-                try (final LockedFileChannel lockedChannel = LockedFileChannel.openForWriting(path)/*LockedFileChannel.openForAppend(path)*/) {
+                try (final LockedFileChannel lockedChannel = LockedFileChannel.openForWriting(path)) {
                     final long file_offset = lockedChannel.getFileChannel().position();
                     final OutputStream ostream = Channels.newOutputStream(lockedChannel.getFileChannel());
-                    System.out.println("id: " + brickID + " " + dataBlock.getNumElements() + " " + (dataBlock.getNumElements() * 8));
-                    System.out.println(Arrays.toString(dataBlock.getSize()));
                     DefaultBlockWriter.writeBlock(ostream, attributes, dataBlock);
-                    final long data_size = 0L;//lockedChannel.getFileChannel().position() - file_offset;
+                    final long data_size = 0L;
                     final long[] bound_min = {gridPosition[0] * blockSize[0], gridPosition[1] * blockSize[1], gridPosition[2] * blockSize[2]};
                     ret.add(new VVDBlockMetadata(brickID, data_size, path.getFileName().toString(), compression, file_offset, longCroppedBlockSize, bound_min, dimension));
-                    //System.out.println( "saveNonEmptyBlock: finished " + brickID );
                 }
             }
 
@@ -1239,19 +1172,7 @@ public class N5ToVVDSpark
         }
         return ret;
     }
-/*
-    public static final <T extends NativeType<T>> String saveNonEmptyBlock(
-            final RandomAccessibleInterval<T> source,
-            final String filepath,
-            final DatasetAttributes attributes,
-            final T defaultValue) throws IOException {
 
-        final int[] blockSize = attributes.getBlockSize();
-        final long[] gridOffset = new long[blockSize.length];
-        Arrays.setAll(gridOffset, d -> source.min(d) / blockSize[d]);
-        return saveNonEmptyBlock(source, filepath, attributes, gridOffset, defaultValue);
-    }
-*/
 }
 
 
