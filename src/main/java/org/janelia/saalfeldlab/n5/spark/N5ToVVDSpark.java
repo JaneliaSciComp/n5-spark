@@ -248,6 +248,29 @@ public class N5ToVVDSpark
         }
     }
 
+    private static Interval calculateSourceInterval(
+            Interval targetInterval,
+            double[] downsamplingFactors,
+            long[] inputDimensions) 
+    {
+
+        final int dim = targetInterval.numDimensions();
+        final long[] sourceMin = new long[dim];
+        final long[] sourceMax = new long[dim];
+
+        for (int d = 0; d < dim; d++) {
+            sourceMin[d] = (long) (targetInterval.min(d) * downsamplingFactors[d] + 0.5) - 1;
+            if (sourceMin[d] < 0)
+                sourceMin[d] = 0;
+
+            sourceMax[d] = (long) (targetInterval.max(d) * downsamplingFactors[d] + 0.5) + 1;
+            if (sourceMax[d] >= inputDimensions[d])
+                sourceMax[d] = inputDimensions[d] - 1;
+        }
+
+        return new FinalInterval(sourceMin, sourceMax);
+    }
+
     /**
      * Downsamples the given input dataset of an N5 container with respect to the given downsampling factors.
      * The output dataset will be created within the same N5 container with given block size.
@@ -416,7 +439,31 @@ public class N5ToVVDSpark
             /* do if not empty */
             final RandomAccessibleInterval<I> sourceBlock2 = Views.interval(source, sourceInterval);
             final RandomAccessibleInterval<I> targetBlock = new ArrayImgFactory<>(defaultValue).create(targetInterval);
-            downsampleFunction(sourceBlock2, inputDimensions, targetBlock, targetInterval, downsamplingFactors);
+            //downsampleFunction(sourceBlock2, inputDimensions, targetBlock, targetInterval, downsamplingFactors);
+
+            final int tileSize = 64;
+            final long[] tileMin = new long[dim];
+            final long[] tileMax = new long[dim];
+            for (long z = targetMin[2]; z <= targetMax[2]; z += tileSize) {
+                for (long y = targetMin[1]; y <= targetMax[1]; y += tileSize) {
+                    for (long x = targetMin[0]; x <= targetMax[0]; x += tileSize) {
+                        tileMin[0] = x;
+                        tileMin[1] = y;
+                        tileMin[2] = z;
+                        tileMax[0] = Math.min(x + tileSize - 1, targetMax[0]);
+                        tileMax[1] = Math.min(y + tileSize - 1, targetMax[1]);
+                        tileMax[2] = Math.min(z + tileSize - 1, targetMax[2]);
+
+                        Interval tileTargetInterval = new FinalInterval(tileMin, tileMax);
+                        Interval tileSourceInterval = calculateSourceInterval(tileTargetInterval, downsamplingFactors, inputDimensions);
+
+                        RandomAccessibleInterval<I> tileSourceBlock = Views.interval(source, tileSourceInterval);
+                        RandomAccessibleInterval<I> tileTargetBlock = Views.interval(targetBlock, tileTargetInterval);
+
+                        downsampleFunction(tileSourceBlock, inputDimensions, tileTargetBlock, tileTargetInterval, downsamplingFactors);
+                    }
+                }
+            }
 
             final O outputType = N5Utils.type(outputDataType);
             final RandomAccessible<O> convertedSource;
