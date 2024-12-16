@@ -423,9 +423,6 @@ public class N5ToVVDSpark
 
             final N5Reader n5Local = n5InputSupplier.get();
 
-            final RandomAccessibleInterval<I> source = N5Utils.open(n5Local, inputDatasetPath);
-            final RandomAccessibleInterval<I> sourceBlock = Views.offsetInterval(source, sourceInterval);
-
             /* test if empty */
             boolean isEmpty = true;
 
@@ -435,6 +432,10 @@ public class N5ToVVDSpark
             for (long z = sourceMin[2]; z <= sourceMax[2]; z += sTileSize) {
                 for (long y = sourceMin[1]; y <= sourceMax[1]; y += sTileSize) {
                     for (long x = sourceMin[0]; x <= sourceMax[0]; x += sTileSize) {
+
+                        final RandomAccessibleInterval<I> source = N5Utils.open(n5Local, inputDatasetPath);
+                        //final RandomAccessibleInterval<I> sourceBlock = Views.offsetInterval(source, sourceInterval);
+
                         sTileMin[0] = x;
                         sTileMin[1] = y;
                         sTileMin[2] = z;
@@ -457,7 +458,6 @@ public class N5ToVVDSpark
                 if (!isEmpty) break;
             }
 
-            final I defaultValue = Util.getTypeFromInterval(sourceBlock).createVariable();
             /* 
             for (final I t : Views.iterable(sourceBlock)) {
                 isEmpty &= defaultValue.valueEquals(t);
@@ -468,16 +468,20 @@ public class N5ToVVDSpark
                 return new ArrayList<VVDBlockMetadata>();
 
             /* do if not empty */
-            final RandomAccessibleInterval<I> sourceBlock2 = Views.interval(source, sourceInterval);
+            final RandomAccessibleInterval<I> source_a = N5Utils.open(n5Local, inputDatasetPath);
+            final I defaultValue = Util.getTypeFromInterval(source_a).createVariable();
             final RandomAccessibleInterval<I> targetBlock = new ArrayImgFactory<>(defaultValue).create(targetInterval);
             //downsampleFunction(sourceBlock2, inputDimensions, targetBlock, targetInterval, downsamplingFactors);
 
-            final int tileSize = 48;
+            final int tileSize = 64;
             final long[] tileMin = new long[dim];
             final long[] tileMax = new long[dim];
             for (long z = targetMin[2]; z <= targetMax[2]; z += tileSize) {
                 for (long y = targetMin[1]; y <= targetMax[1]; y += tileSize) {
                     for (long x = targetMin[0]; x <= targetMax[0]; x += tileSize) {
+                        final RandomAccessibleInterval<I> source = N5Utils.open(n5Local, inputDatasetPath);
+                        final RandomAccessibleInterval<I> sourceBlock2 = Views.interval(source, sourceInterval);
+                        
                         tileMin[0] = x - targetMin[0];
                         tileMin[1] = y - targetMin[1];
                         tileMin[2] = z - targetMin[2];
