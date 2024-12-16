@@ -441,7 +441,7 @@ public class N5ToVVDSpark
             final RandomAccessibleInterval<I> targetBlock = new ArrayImgFactory<>(defaultValue).create(targetInterval);
             //downsampleFunction(sourceBlock2, inputDimensions, targetBlock, targetInterval, downsamplingFactors);
 
-            final int tileSize = 64;
+            final int tileSize = 48;
             final long[] tileMin = new long[dim];
             final long[] tileMax = new long[dim];
             for (long z = targetMin[2]; z <= targetMax[2]; z += tileSize) {
