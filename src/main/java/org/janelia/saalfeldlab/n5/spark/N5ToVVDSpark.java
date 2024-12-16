@@ -567,10 +567,10 @@ public class N5ToVVDSpark
         final long[] maxRequiredInput = new long[ n ];
 
         for ( int d = 0; d < n; ++d ) {
-            minRequiredInput[ d ] = (long)(outInterval.min(d) * factor[ d ]) + nmin[d];
+            minRequiredInput[ d ] = (long)((output.min(d) + outInterval.min(d)) * factor[ d ]) + nmin[d];
             if (minRequiredInput[ d ] < 0)
                 minRequiredInput[ d ] = 0;
-            maxRequiredInput[ d ] = (long)(Math.ceil(outInterval.max(d) * factor[ d ])) + nmax[d];
+            maxRequiredInput[ d ] = (long)(Math.ceil((output.max(d) + outInterval.min(d)) * factor[ d ])) + nmax[d];
             if (maxRequiredInput[ d ] > inputDimensinos[ d ] - 1 - 1)
                 maxRequiredInput[ d ] = inputDimensinos[ d ] - 1 - 1;
         }
