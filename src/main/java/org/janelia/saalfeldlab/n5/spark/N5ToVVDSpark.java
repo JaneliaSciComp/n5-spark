@@ -429,10 +429,40 @@ public class N5ToVVDSpark
             /* test if empty */
             final I defaultValue = Util.getTypeFromInterval(sourceBlock).createVariable();
             boolean isEmpty = true;
+
+            final int sTileSize = 256;
+            final long[] sTileMin = new long[dim];
+            final long[] sTileMax = new long[dim];
+            for (long z = sourceMin[2]; z <= sourceMax[2]; z += sTileSize) {
+                for (long y = sourceMin[1]; y <= sourceMax[1]; y += sTileSize) {
+                    for (long x = sourceMin[0]; x <= sourceMax[0]; x += sTileSize) {
+                        sTileMin[0] = x;
+                        sTileMin[1] = y;
+                        sTileMin[2] = z;
+                        sTileMax[0] = Math.min(x + sTileSize - 1, sourceMax[0]);
+                        sTileMax[1] = Math.min(y + sTileSize - 1, sourceMax[1]);
+                        sTileMax[2] = Math.min(z + sTileSize - 1, sourceMax[2]);
+                        Interval tileBlockInterval = new FinalInterval(sTileMin, sTileMax);
+
+                        RandomAccessibleInterval<I> tileSourceBlock = Views.interval(source, tileBlockInterval);
+
+                        for (final I t : Views.iterable(tileSourceBlock)) {
+                            isEmpty &= defaultValue.valueEquals(t);
+                            if (!isEmpty) break;
+                        }
+                        if (!isEmpty) break;
+                    }
+                    if (!isEmpty) break;
+                }
+                if (!isEmpty) break;
+            }
+
+            /* 
             for (final I t : Views.iterable(sourceBlock)) {
                 isEmpty &= defaultValue.valueEquals(t);
                 if (!isEmpty) break;
             }
+            */
             if (isEmpty)
                 return new ArrayList<VVDBlockMetadata>();
 
