@@ -447,14 +447,6 @@ public class N5ToVVDSpark
             for (long z = targetMin[2]; z <= targetMax[2]; z += tileSize) {
                 for (long y = targetMin[1]; y <= targetMax[1]; y += tileSize) {
                     for (long x = targetMin[0]; x <= targetMax[0]; x += tileSize) {
-                        tileMin[0] = x;
-                        tileMin[1] = y;
-                        tileMin[2] = z;
-                        tileMax[0] = Math.min(x + tileSize - 1, targetMax[0]);
-                        tileMax[1] = Math.min(y + tileSize - 1, targetMax[1]);
-                        tileMax[2] = Math.min(z + tileSize - 1, targetMax[2]);
-                        Interval tileTargetInterval = new FinalInterval(tileMin, tileMax);
-
                         tileMin[0] = x - targetMin[0];
                         tileMin[1] = y - targetMin[1];
                         tileMin[2] = z - targetMin[2];
@@ -465,7 +457,7 @@ public class N5ToVVDSpark
 
                         RandomAccessibleInterval<I> tileTargetBlock = Views.interval(targetBlock, tileBlockInterval);
 
-                        downsampleFunction(sourceBlock2, inputDimensions, tileTargetBlock, tileTargetInterval, downsamplingFactors);
+                        downsampleFunction(sourceBlock2, inputDimensions, tileTargetBlock, targetInterval, downsamplingFactors);
                     }
                 }
             }
