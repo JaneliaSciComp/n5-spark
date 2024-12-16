@@ -427,7 +427,6 @@ public class N5ToVVDSpark
             final RandomAccessibleInterval<I> sourceBlock = Views.offsetInterval(source, sourceInterval);
 
             /* test if empty */
-            final I defaultValue = Util.getTypeFromInterval(sourceBlock).createVariable();
             boolean isEmpty = true;
 
             final int sTileSize = 256;
@@ -444,7 +443,8 @@ public class N5ToVVDSpark
                         sTileMax[2] = Math.min(z + sTileSize - 1, sourceMax[2]);
                         Interval tileBlockInterval = new FinalInterval(sTileMin, sTileMax);
 
-                        RandomAccessibleInterval<I> tileSourceBlock = Views.interval(source, tileBlockInterval);
+                        RandomAccessibleInterval<I> tileSourceBlock = Views.offsetInterval(source, tileBlockInterval);
+                        final I defaultValue = Util.getTypeFromInterval(tileSourceBlock).createVariable();
 
                         for (final I t : Views.iterable(tileSourceBlock)) {
                             isEmpty &= defaultValue.valueEquals(t);
@@ -457,6 +457,7 @@ public class N5ToVVDSpark
                 if (!isEmpty) break;
             }
 
+            final I defaultValue = Util.getTypeFromInterval(sourceBlock).createVariable();
             /* 
             for (final I t : Views.iterable(sourceBlock)) {
                 isEmpty &= defaultValue.valueEquals(t);
@@ -584,7 +585,7 @@ public class N5ToVVDSpark
         final long[] nmin = new long[ n ];
         final long[] nmax = new long[ n ];
         for ( int d = 0; d < n && d < 2; ++d ) {
-            nmin[d] = -1;
+            nmin[d] = -2;
             nmax[d] = 2;
         }
         for ( int d = 2; d < n && d < 3; ++d ) {
@@ -601,39 +602,54 @@ public class N5ToVVDSpark
             if (minRequiredInput[ d ] < 0)
                 minRequiredInput[ d ] = 0;
             maxRequiredInput[ d ] = (long)(Math.ceil((output.max(d) + outInterval.min(d)) * factor[ d ])) + nmax[d];
-            if (maxRequiredInput[ d ] > inputDimensinos[ d ] - 1 - 1)
-                maxRequiredInput[ d ] = inputDimensinos[ d ] - 1 - 1;
+            if (maxRequiredInput[ d ] > inputDimensinos[ d ] - 1)
+                maxRequiredInput[ d ] = inputDimensinos[ d ] - 1;
         }
 
-        final ExtendedRandomAccessibleInterval< T, RandomAccessibleInterval<T> > requiredInput = Views.extendBorder(Views.interval( input, new FinalInterval( minRequiredInput, maxRequiredInput ) ));
+        //final RandomAccessibleInterval<T> requiredInput = Views.interval( input, new FinalInterval( minRequiredInput, maxRequiredInput ) );
 
-        final RectangleShape.NeighborhoodsAccessible< T > neighborhoods = new RectangleShape.NeighborhoodsAccessible<>( requiredInput, spanInterval, f );
-        final RandomAccess< Neighborhood< T > > block = neighborhoods.randomAccess();
+        //final RectangleShape.NeighborhoodsAccessible< T > neighborhoods = new RectangleShape.NeighborhoodsAccessible<>( requiredInput, spanInterval, f );
+        //final RandomAccess< Neighborhood< T > > block = neighborhoods.randomAccess();
 
         final int kernel_len = 4;
-        final int size = kernel_len * kernel_len;
+        int size = kernel_len * kernel_len;
         final long znum = nmax[2];
         final double[] s_pos = new double[2]; //sampling position in an input image
         final double[] k_pos = new double[2]; //position of the top-left corner of the kernel in an input image
         final double[] elems = new double[size];
         final Cursor< T > out = Views.iterable( output ).localizingCursor();
+        final long[] minKernel = new long[ n ];
+        final long[] maxKernel = new long[ n ];
         while( out.hasNext() )
         {
             final T o = out.next();
 
             for ( int d = 0; d < n && d < 2; ++d ) {
                 double p0 = (outInterval.min(d) + out.getLongPosition(d) + 0.5) * factor[d];
-                block.setPosition((long)(p0 - 1.0 + 0.5), d); //round(p0 - 1.0)
+                //block.setPosition((long)(p0 - 1.0 + 0.5), d); //round(p0 - 1.0)
                 s_pos[d] = p0;
                 k_pos[d] = (long)(p0 - 1.0 + 0.5) - 1; //round(p0 - 1.0) - 1
+                
+                minKernel[d] = (long)k_pos[d];
+                if (minKernel[d] < minRequiredInput[d]) minKernel[d] = minRequiredInput[d];
+                maxKernel[d] = (long)k_pos[d] + 4;
+                if (maxKernel[d] >= maxRequiredInput[d]) maxKernel[d] = maxRequiredInput[d];
             }
             for ( int d = 2; d < n; ++d ) {
                 double p0 = (outInterval.min(d) + out.getLongPosition(d) + 0.5) * factor[d];
-                block.setPosition((long)p0, d);
+                //block.setPosition((long)p0, d);
+                minKernel[d] = (long)p0;
+                if (minKernel[d] < minRequiredInput[d]) minKernel[d] = minRequiredInput[d];
+                maxKernel[d] = (long)p0 + (long)factor[d];
+                if (maxKernel[d] >= maxRequiredInput[d]) maxKernel[d] = maxRequiredInput[d];
             }
+            
+            final RandomAccessibleInterval<T> kernel = Views.interval( input, new FinalInterval( minKernel, maxKernel ) );
+
+            size = (int)(maxKernel[0] - minKernel[0]) * (int)(maxKernel[1] - minKernel[1]);
 
             double maxval = 0;
-            Iterator<T> ite = block.get().iterator();
+            final Cursor< T > ite = Views.iterable( kernel ).localizingCursor();
             for (long zz = 0; zz < znum; zz++) {
                 for (int i = 0; i < size; i++) {
                     if (ite.hasNext())
