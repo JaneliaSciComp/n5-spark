@@ -411,10 +411,10 @@ public class N5ToVVDSpark
             cellGrid.getCellDimensions(blockGridPosition, targetMin, cellDimensions);
             for (int d = 0; d < dim; ++d) {
                 targetMax[d] = targetMin[d] + cellDimensions[d] - 1;
-                sourceMin[d] = (long) (targetMin[d] * downsamplingFactors[d] + 0.5) - 1;
+                sourceMin[d] = (long) (targetMin[d] * downsamplingFactors[d] + 0.5) - 2;
                 if (sourceMin[d] < 0)
                     sourceMin[d] = 0;
-                sourceMax[d] = (long) (targetMax[d] * downsamplingFactors[d] + 0.5) + 1;
+                sourceMax[d] = (long) (targetMax[d] * downsamplingFactors[d] + 0.5) + 2;
                 if (sourceMax[d] > inputDimensions[d] - 1)
                     sourceMax[d] = inputDimensions[d] - 1;
             }
@@ -531,16 +531,24 @@ public class N5ToVVDSpark
             String dir_path = Paths.get(outputDatasetPath).getParent().toString();
             long offset = 0;
             byte[] buffer = new byte[8192];
+            
             for (int i = 0; i < final_res.size(); i++) {
                 final Path chunkFilePath = Paths.get(dir_path, final_res.get(i).getFilePath());
                 File sourceFile = chunkFilePath.toFile();
                 in = new BufferedInputStream(new FileInputStream(sourceFile));
                 int read_size = -1;
                 long datasize = 0;
+                
+                ByteArrayOutputStream tempBuffer = new ByteArrayOutputStream();
                 while ((read_size = in.read(buffer)) != -1) {
-                    out.write(buffer, 0, read_size);
+                    tempBuffer.write(buffer, 0, read_size);
                     datasize += read_size;
                 }
+                
+                byte[] convertedData = tempBuffer.toByteArray();
+                EndianConverter.convertToLittleEndian(convertedData, n5OutputSupplier.get().getDatasetAttributes(TEMP_N5_DIR).getDataType());
+                
+                out.write(convertedData);
                 in.close();
                 sourceFile.delete();
 
@@ -602,7 +610,7 @@ public class N5ToVVDSpark
         final long[] maxRequiredInput = new long[ n ];
 
         for ( int d = 0; d < n; ++d ) {
-            minRequiredInput[ d ] = (long)((output.min(d) + outInterval.min(d)) * factor[ d ]) + nmin[d];
+            minRequiredInput[ d ] = (long)((output.min(d) + outInterval.min(d) + 0.5) * factor[ d ]) + nmin[d];
             if (minRequiredInput[ d ] < 0)
                 minRequiredInput[ d ] = 0;
             maxRequiredInput[ d ] = (long)(Math.ceil((output.max(d) + outInterval.min(d)) * factor[ d ])) + nmax[d];
@@ -620,6 +628,7 @@ public class N5ToVVDSpark
         final long znum = nmax[2];
         final double[] s_pos = new double[2]; //sampling position in an input image
         final double[] k_pos = new double[2]; //position of the top-left corner of the kernel in an input image
+        final int[] k_offsets = new int[2];
         final double[] elems = new double[size];
         final Cursor< T > out = Views.iterable( output ).localizingCursor();
         final long[] minKernel = new long[ n ];
@@ -635,22 +644,31 @@ public class N5ToVVDSpark
                 k_pos[d] = (long)(p0 - 1.0 + 0.5) - 1; //round(p0 - 1.0) - 1
                 
                 minKernel[d] = (long)k_pos[d];
-                if (minKernel[d] < minRequiredInput[d]) minKernel[d] = minRequiredInput[d];
-                maxKernel[d] = (long)k_pos[d] + 4;
+
+                k_offsets[d] = 0;
+                if (minKernel[d] < minRequiredInput[d]) 
+                {
+                    minKernel[d] = minRequiredInput[d];
+                    k_offsets[d] = (int)(minKernel[d] - k_pos[d] + 0.5);
+                }
+                maxKernel[d] = (long)k_pos[d] + 4 - 1;
                 if (maxKernel[d] >= maxRequiredInput[d]) maxKernel[d] = maxRequiredInput[d];
             }
             for ( int d = 2; d < n; ++d ) {
-                double p0 = (outInterval.min(d) + out.getLongPosition(d) + 0.5) * factor[d];
+                double p0 = (outInterval.min(d) + out.getLongPosition(d)) * factor[d];
                 //block.setPosition((long)p0, d);
                 minKernel[d] = (long)p0;
                 if (minKernel[d] < minRequiredInput[d]) minKernel[d] = minRequiredInput[d];
-                maxKernel[d] = (long)p0 + (long)factor[d];
+                maxKernel[d] = (long)p0 + (long)factor[d] - 1;
                 if (maxKernel[d] >= maxRequiredInput[d]) maxKernel[d] = maxRequiredInput[d];
             }
             
             final RandomAccessibleInterval<T> kernel = Views.interval( input, new FinalInterval( minKernel, maxKernel ) );
 
-            size = (int)(maxKernel[0] - minKernel[0]) * (int)(maxKernel[1] - minKernel[1]);
+            int kernel_w = (int)(maxKernel[0] - minKernel[0] + 1);
+            int kernel_h = (int)(maxKernel[1] - minKernel[1] + 1);
+            
+            size = kernel_w * kernel_h;
 
             double maxval = 0;
             final Cursor< T > ite = Views.iterable( kernel ).localizingCursor();
@@ -663,12 +681,12 @@ public class N5ToVVDSpark
                 }
 
                 double q = 0;
-                for (int v = 0; v < kernel_len; v++) {
+                for (int v = 0; v < kernel_h; v++) {
                     double p = 0;
-                    for (int u = 0; u < kernel_len; u++) {
-                        p += elems[4 * v + u] * cubic(s_pos[0] - (k_pos[0] + u + 0.5 - 1));
+                    for (int u = 0; u < kernel_w; u++) {
+                        p += elems[kernel_w * v + u] * cubic(s_pos[0] - (k_pos[0] + u + k_offsets[0] + 0.5 - 1));
                     }
-                    q += p * cubic(s_pos[1] - (k_pos[1] + v + 0.5 - 1));
+                    q += p * cubic(s_pos[1] - (k_pos[1] + v + k_offsets[1] + 0.5 - 1));
                 }
                 if (maxval < q)
                     maxval = q;
@@ -993,6 +1011,40 @@ public class N5ToVVDSpark
         public double[] getMinDownsamplingFactors() { return minDownsamplingFactors; }
         public double[] getMaxDownsamplingFactors() { return maxDownsamplingFactors; }
         public Integer getNumLevels() { return numLevels; }
+    }
+
+    static class EndianConverter implements Serializable {
+        private static void swapEndian(byte[] bytes, int typeSize) {
+            for (int i = 0; i < bytes.length; i += typeSize) {
+                for (int j = 0; j < typeSize / 2; j++) {
+                    byte temp = bytes[i + j];
+                    bytes[i + j] = bytes[i + typeSize - 1 - j];
+                    bytes[i + typeSize - 1 - j] = temp;
+                }
+            }
+        }
+    
+        public static void convertToLittleEndian(byte[] data, DataType dataType) {
+            switch (dataType) {
+                case UINT16:
+                case INT16:
+                    swapEndian(data, 2);
+                    break;
+                case UINT32:
+                case INT32:
+                case FLOAT32:
+                    swapEndian(data, 4);
+                    break;
+                case UINT64:
+                case INT64:
+                case FLOAT64:
+                    swapEndian(data, 8);
+                    break;
+                // UINT8, INT8は変換不要
+                default:
+                    break;
+            }
+        }
     }
 
     static class VVDBlockMetadata implements Serializable
