@@ -544,19 +544,46 @@ public class N5ToVVDSpark
                     tempBuffer.write(buffer, 0, read_size);
                     datasize += read_size;
                 }
-                
-                byte[] convertedData = tempBuffer.toByteArray();
+
+                byte[] tempData = tempBuffer.toByteArray();
+                if (tempData.length <= 16) {
+                    throw new IOException("Compressed data is too short to skip 16 bytes.");
+                }
+                byte[] compressedData = Arrays.copyOfRange(tempData, 16, tempData.length);
+                byte[] convertedData;
+                try (ByteArrayInputStream bais = new ByteArrayInputStream(compressedData);
+                    InputStream decompressStream = getDecompressionStream(outputCompression, bais)) {
+
+                    ByteArrayOutputStream decompressedBuffer = new ByteArrayOutputStream();
+                    byte[] d_buffer = new byte[8192];
+                    int read;
+                    while ((read = decompressStream.read(d_buffer)) != -1) {
+                        decompressedBuffer.write(d_buffer, 0, read);
+                    }
+                    convertedData = decompressedBuffer.toByteArray();
+
+                } catch (IOException e) {
+                    throw new RuntimeException("Failed to decompress data with compression: " + outputCompression.getType(), e);
+                }
+
                 EndianConverter.convertToLittleEndian(convertedData, n5OutputSupplier.get().getDatasetAttributes(TEMP_N5_DIR).getDataType());
+
+                ByteArrayOutputStream compressedBuffer = new ByteArrayOutputStream();
+                try (OutputStream compressionOut = new java.util.zip.DeflaterOutputStream(compressedBuffer)) {
+                    compressionOut.write(convertedData);
+                    compressionOut.flush();
+                }
                 
-                out.write(convertedData);
+                byte[] finalCompressedData = compressedBuffer.toByteArray();
+                out.write(finalCompressedData);
                 in.close();
                 sourceFile.delete();
 
                 final_res.get(i).setFileOffset(offset);
                 final_res.get(i).setFilePath(packedFilePath.getFileName().toString());
-                final_res.get(i).setDataSize(datasize);
+                final_res.get(i).setDataSize(finalCompressedData.length);
 
-                offset += datasize;
+                offset += finalCompressedData.length;
             }
             out.flush();
             lockedChannel.close();
@@ -575,6 +602,38 @@ public class N5ToVVDSpark
         final_res.sort( comparing(VVDBlockMetadata::getFileOffset) );
 
         return final_res;
+    }
+
+    private static InputStream getDecompressionStream(Compression compression, InputStream input) throws IOException {
+        if (compression instanceof org.janelia.saalfeldlab.n5.RawCompression) {
+            return input;
+        } else if (compression instanceof org.janelia.saalfeldlab.n5.GzipCompression) {
+            return new java.util.zip.GZIPInputStream(input);
+        } else if (compression instanceof org.janelia.saalfeldlab.n5.Bzip2Compression) {
+            return new org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream(input);
+        } else if (compression instanceof org.janelia.saalfeldlab.n5.XzCompression) {
+            return new org.tukaani.xz.XZInputStream(input);
+        } else if (compression instanceof org.janelia.saalfeldlab.n5.Lz4Compression) {
+            return new net.jpountz.lz4.LZ4BlockInputStream(input);
+        } else {
+            throw new IllegalArgumentException("Unsupported compression type for decompression: " + compression.getClass().getName());
+        }
+    }
+
+    private static OutputStream getCompressionStream(Compression compression, OutputStream output) throws IOException {
+        if (compression instanceof org.janelia.saalfeldlab.n5.RawCompression) {
+            return output;
+        } else if (compression instanceof org.janelia.saalfeldlab.n5.GzipCompression) {
+            return new java.util.zip.GZIPOutputStream(output);
+        } else if (compression instanceof org.janelia.saalfeldlab.n5.Bzip2Compression) {
+            return new org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream(output);
+        } else if (compression instanceof org.janelia.saalfeldlab.n5.XzCompression) {
+            return new org.tukaani.xz.XZOutputStream(output, new org.tukaani.xz.LZMA2Options());
+        } else if (compression instanceof org.janelia.saalfeldlab.n5.Lz4Compression) {
+            return new net.jpountz.lz4.LZ4BlockOutputStream(output);
+        } else {
+            throw new IllegalArgumentException("Unsupported compression type for compression: " + compression.getClass().getName());
+        }
     }
 
     public static final double cubic(double x) {
@@ -880,7 +939,7 @@ public class N5ToVVDSpark
             for (int lv = 0; lv < downsamplingFactors.length; lv++) {
                 long[] dims = vvdxml.get(lv).get(0).getDimension();
                 writer.append(String.format("<Level lv=\"%d\" imageW=\"%d\" imageH=\"%d\" imageD=\"%d\" %s bitDepth=\"%d\" FileType=\"%s\">",
-                        lv, dims[0], dims[1], dims[2], res_strs.get(lv), bit_depth, outputCompression.getType()));
+                        lv, dims[0], dims[1], dims[2], res_strs.get(lv), bit_depth, "ZLIB"));
                 writer.newLine();
 
                 writer.append(String.format("<Bricks brick_baseW=\"%d\" brick_baseH=\"%d\" brick_baseD=\"%d\">",
@@ -896,7 +955,7 @@ public class N5ToVVDSpark
                 writer.append("<Files>");
                 writer.newLine();
                 for (VVDBlockMetadata vbm : vvdxml.get(lv)) {
-                    vbm.setFileOffset(vbm.getFileOffset()+16L);
+                    vbm.setFileOffset(vbm.getFileOffset());
                     writer.append(vbm.getVVDXMLFileTag());
                     writer.newLine();
                 }
