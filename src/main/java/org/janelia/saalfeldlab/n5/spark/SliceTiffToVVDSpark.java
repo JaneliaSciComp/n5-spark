@@ -506,7 +506,7 @@ public class SliceTiffToVVDSpark {
             for (int lv = 0; lv < downsamplingFactors.length; lv++) {
                 long[] dims = vvdxml.get(lv).get(0).getDimension();
                 writer.append(String.format("<Level lv=\"%d\" imageW=\"%d\" imageH=\"%d\" imageD=\"%d\" %s bitDepth=\"%d\" FileType=\"%s\">",
-                        lv, dims[0], dims[1], dims[2], res_strs.get(lv), bit_depth, outputCompression.getType()));
+                        lv, dims[0], dims[1], dims[2], res_strs.get(lv), bit_depth, "ZLIB"));
                 writer.newLine();
 
                 writer.append(String.format("<Bricks brick_baseW=\"%d\" brick_baseH=\"%d\" brick_baseD=\"%d\">",
@@ -521,8 +521,9 @@ public class SliceTiffToVVDSpark {
 
                 writer.append("<Files>");
                 writer.newLine();
+                // N5ToVVDSpark.downsample() packs each brick as a plain zlib stream (N5 block header
+                // already stripped), so the offsets must be written as is (same as N5ToVVDSpark.main).
                 for (N5ToVVDSpark.VVDBlockMetadata vbm : vvdxml.get(lv)) {
-                    vbm.setFileOffset(vbm.getFileOffset()+16L);
                     writer.append(vbm.getVVDXMLFileTag());
                     writer.newLine();
                 }
